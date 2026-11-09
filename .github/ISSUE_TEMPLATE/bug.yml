@@ -1,0 +1,48 @@
+name: Bug
+description: A crash, an error, or a check that never runs
+labels: [bug]
+body:
+  - type: input
+    id: command
+    attributes:
+      label: The command you ran
+      description: The exact command line, with the draft's file name.
+      placeholder: furbish check my-draft.md
+    validations:
+      required: true
+  - type: textarea
+    id: draft
+    attributes:
+      label: A made-up draft that shows the problem
+      description: Keep it short. Never paste someone else's real post.
+      render: markdown
+    validations:
+      required: true
+  - type: checkboxes
+    id: kind
+    attributes:
+      label: What kind of report
+      options:
+        - label: "Wrong flag: a good line was flagged, or a bad one was missed"
+  - type: textarea
+    id: output
+    attributes:
+      label: What happened
+      description: furbish's full output, or the traceback.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Python and system
+      description: Output of `python3 --version`, and your system.
+      placeholder: Python 3.12.3, Ubuntu 24.04
+    validations:
+      required: true

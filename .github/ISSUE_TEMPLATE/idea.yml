@@ -1,0 +1,36 @@
+name: Idea
+description: A rule, command or checker furbish could have
+labels: [enhancement]
+body:
+  - type: input
+    id: idea
+    attributes:
+      label: The idea
+      description: One line, in plain words.
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What it would catch or do
+      description: With an example if you have one. Make the example up, and show the problem in it.
+    validations:
+      required: true
+  - type: textarea
+    id: cost
+    attributes:
+      label: Cost and limits
+      description: Speed, file size, and any outside program it would need.
+    validations:
+      required: true
+  - type: checkboxes
+    id: rules
+    attributes:
+      label: Rules
+      options:
+        - label: It never needs the network.
+          required: true
+        - label: It runs nothing a draft names.
+          required: true
+        - label: It needs no outside program, or only one the user's config names.
+          required: true
