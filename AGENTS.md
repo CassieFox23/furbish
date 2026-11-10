@@ -8,7 +8,7 @@ The whole program is one file, `furbish.py`. It uses the Python standard library
 
 | Part | Holds |
 |---|---|
-| `furbish.py` | the command line (today `check`, `--help` and `--version`), the prose reader (`read_prose`, `ari`) and the config loader (`find_config`, `load_config`, `pick_profile`) |
+| `furbish.py` | the command line (today `check`, `--help` and `--version`), the prose reader (`read_prose`, `ari`) and the config loader (`find_config`, `load_config`, `pick_profile`) and the outside-checker runner (`run_external`) |
 | `tests/` | offline unit tests, on made-up drafts only; the drafts are in `tests/drafts/` |
 | `data/` (planned) | word lists borrowed from proselint (BSD-3-Clause), write-good (MIT) and AI-tell phrase lists (MIT), each kept beside its upstream licence, with a NOTICE file |
 

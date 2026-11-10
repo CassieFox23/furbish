@@ -7,7 +7,7 @@ Checks and tidies GitHub PR and issue drafts before they're posted: plain words,
 
 ## What it does
 
-- `furbish check DRAFT [--repo owner/name] [--post]`: prints only the problems, with the line and sentence id (like S12). Silent on a pass. Exit 0 pass, 1 problems found, 2 could not run. Reading-grade checks run only with `--post`. It needs no config, but the footer, TL;DR, banned phrases, private text and first-line rules come from [your config](CONFIG.md).
+- `furbish check DRAFT [--repo owner/name] [--post]`: prints only the problems, with the line and sentence id (like S12). Silent on a pass. Exit 0 pass, 1 problems found, 2 could not run. Reading-grade checks run only with `--post`. It needs no config, but the footer, TL;DR, banned phrases, private text and first-line rules come from [your config](CONFIG.md), which can also name outside checkers such as Vale to run on the draft.
 - `furbish fix DRAFT [--write]` (planned): safe mechanical edits, shown as a diff unless `--write`. Never touches code, quotes, tables or the footer.
 - `furbish set DRAFT S12 "text"` (planned): replaces one sentence by its id.
 - `furbish split DRAFT` (planned): suggests where to split long sentences.

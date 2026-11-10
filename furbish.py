@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import argparse, bisect, os, re, sys, tomllib
+import argparse, bisect, json, os, re, subprocess, sys, tomllib
 from collections import namedtuple
 
 __version__ = "0.1.0.dev0"
@@ -780,6 +780,126 @@ def check(text, profile=None, post=False, exempt=frozenset()):
     return problems
 
 
+EXTERNAL_TIMEOUT = 60
+
+
+class ExternalError(ConfigError):
+    pass
+
+
+def _parse_json_output(name, stdout):
+    try:
+        data = json.loads(stdout)
+    except (ValueError, RecursionError):
+        raise ExternalError(f"{name}: printed something that is not JSON")
+    if not isinstance(data, dict):
+        raise ExternalError(f"{name}: printed JSON in a shape furbish does not read")
+    for v in data.values():
+        if not isinstance(v, list):
+            raise ExternalError(f"{name}: printed JSON in a shape furbish does not read")
+    return data
+
+
+def _parse_lines_output(name, draft_path, stdout, fail_re):
+    path_prefix = "^" + re.escape(draft_path) + r":(\d{1,9})(?::\d+)?:\s*(.*)$"
+    path_re = re.compile(path_prefix)
+    problems = []
+    for line in stdout.split("\n"):
+        line = line.rstrip("\r")
+        if not fail_re.search(line):
+            continue
+        m = path_re.match(line)
+        if m:
+            line_num = int(m.group(1))
+            text = m.group(2)
+        else:
+            line_num = 0
+            text = line.strip()
+        problems.append(Problem(line_num, "", name, f"{name}: {text}"))
+    return problems
+
+
+def _parse_json_alerts(name, data):
+    problems = []
+    for alerts in data.values():
+        for item in alerts:
+            if not isinstance(item, dict):
+                raise ExternalError(f"{name}: printed JSON in a shape furbish does not read")
+            line = item.get("Line")
+            if isinstance(line, int) and not isinstance(line, bool) and line >= 0:
+                line_num = line
+            else:
+                line_num = 0
+            check = item.get("Check")
+            if not isinstance(check, str):
+                check = ""
+            msg = item.get("Message")
+            if not isinstance(msg, str) or not msg:
+                msg = "reported a problem"
+            if check:
+                problems.append(Problem(line_num, "", name, f"{name}: {msg} ({check})"))
+            else:
+                problems.append(Problem(line_num, "", name, f"{name}: {msg}"))
+    return problems
+
+
+def _first_line(text):
+    for line in text.splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+def _why(stdout, stderr):
+    for text in (stdout, stderr):
+        try:
+            obj = json.loads(text)
+        except (ValueError, RecursionError):
+            continue
+        if isinstance(obj, dict) and isinstance(obj.get("Text"), str) and obj["Text"]:
+            return obj["Text"][:200]
+    return (_first_line(stdout) or _first_line(stderr) or "no output")[:200]
+
+
+def _run_entry(entry, draft_path, timeout):
+    name = entry["name"]
+    mode = entry["mode"]
+    command = entry["command"]
+    argv = list(command) + [draft_path]
+    try:
+        result = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+    except (OSError, ValueError) as e:
+        reason = getattr(e, "strerror", None) or e
+        raise ExternalError(f"{name}: could not run {command[0]}: {reason}")
+    except subprocess.TimeoutExpired:
+        raise ExternalError(f"{name}: took longer than {timeout:g} seconds and was stopped")
+    stdout = result.stdout.decode("utf-8", errors="replace")
+    stderr = result.stderr.decode("utf-8", errors="replace")
+    rc = result.returncode
+    if rc not in (0, 1):
+        raise ExternalError(f"{name}: stopped with status {rc}: {_why(stdout, stderr)}")
+    if mode == "lines":
+        fail = entry["fail"]
+        if fail is None:
+            return []
+        fail_re = re.compile(fail)
+        return _parse_lines_output(name, draft_path, stdout, fail_re)
+    else:
+        if not stdout.strip():
+            if rc == 1:
+                raise ExternalError(f"{name}: stopped with status 1 and printed nothing: {_why(stdout, stderr)}")
+            return []
+        data = _parse_json_output(name, stdout)
+        return _parse_json_alerts(name, data)
+
+
+def run_external(entries, draft_path, timeout=EXTERNAL_TIMEOUT):
+    problems = []
+    for entry in entries:
+        problems.extend(_run_entry(entry, draft_path, timeout))
+    return problems
+
+
 def _read_text(path):
     try:
         with open(path, "rb") as f:
@@ -797,6 +917,13 @@ def _template_lines(profile):
     return frozenset(lines)
 
 
+_CONTROL = re.compile("[\x00-\x08\x0a-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069\ud800-\udfff]")
+
+
+def _plain(text):
+    return _CONTROL.sub("?", text)
+
+
 def _run_check(args):
     try:
         path = find_config(os.environ)
@@ -804,13 +931,18 @@ def _run_check(args):
         profile = pick_profile(config, args.repo)
         exempt = _template_lines(profile)
         text = _read_text(args.draft)
+        problems = check(text, profile, args.post, exempt)
+        if profile:
+            problems += run_external(profile["external"], os.path.abspath(args.draft))
     except ConfigError as e:
-        print(f"furbish: {e}", file=sys.stderr)
+        print(f"furbish: {_plain(str(e))}", file=sys.stderr)
         return 2
-    problems = check(text, profile, args.post, exempt)
+    problems.sort(key=lambda p: p.line)
     for p in problems:
+        shown = _plain(args.draft)
+        where = f"{shown}:{p.line}: " if p.line else f"{shown}: "
         sid = f"{p.sid}: " if p.sid else ""
-        print(f"{args.draft}:{p.line}: {sid}{p.message}")
+        print(f"{where}{sid}{_plain(p.message)}")
     return 1 if problems else 0
 
 
