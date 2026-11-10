@@ -359,7 +359,7 @@ class TestLoadConfig(ConfigCase):
         self.bad('[repo."a/b"]\n[[repo."a/b".external]]\nname = "x"\nmode = "lines"\ncommand = ["c"]\nfail = "a{99999999999999999999}"\n', "fail")
 
     def test_a_file_nested_too_deep_is_an_error_not_a_crash(self):
-        self.bad("a = " + "[" * 5000 + "]" * 5000 + "\n")
+        self.bad("a = " + "[" * 5000 + "]" * 5000 + "\n", "too deep")
 
     def test_an_empty_fail_pattern_is_an_error(self):
         self.bad('[repo."a/b"]\n[[repo."a/b".external]]\nname = "x"\nmode = "lines"\ncommand = ["c"]\nfail = ""\n', "fail")

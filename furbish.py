@@ -511,7 +511,9 @@ def load_config(path):
         with open(path, "rb") as f:
             data = tomllib.load(f)
         return _normalise(data)
-    except (tomllib.TOMLDecodeError, UnicodeDecodeError, OSError, RecursionError, ConfigError) as e:
+    except RecursionError:
+        raise ConfigError(f"{path}: the file is nested too deep to read") from None
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError, OSError, ConfigError) as e:
         raise ConfigError(f"{path}: {e}") from None
 
 
