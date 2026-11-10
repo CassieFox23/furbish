@@ -14,11 +14,11 @@ What is planned, in order, and what is not coming. Finished work is in [CHANGELO
 
 - the repo base: docs, CI on Python 3.11 to 3.14, and a stub that answers `--help` and `--version`
 - the prose reader: `read_prose` skips code, comments, tables, `<details>` summaries and the footer, numbers every sentence (S1, S2, …) and grades each with the Automated Readability Index. No command shows it yet; `check` will
+- the config loader: `find_config`, `load_config` and `pick_profile` read and check the file and per-repo profiles described in [CONFIG.md](CONFIG.md), and report a mistake with the file's path and the key at fault. No command reads it yet; `--repo` arrives with `check`
 
 ## Next: the core
 
-- **Config:** the file and per-repo profiles described in [CONFIG.md](CONFIG.md), plus a `first_line_prefix` rule for repos that want posts to start a set way
-- **`check`:** the built-in rules (reading grade with `--post`, template lines exempt, commit shas in backticks, links in backticks, blank lines in `<details>`, SPDX licence ids, `@` mentions outside code, a TL;DR on long posts with its word threshold and sentence cap from config, the footer, banned phrases, private paths such as a home folder), printing only the problems
+- **`check`:** the built-in rules (reading grade with `--post`, template lines exempt, a `first_line_prefix` rule for repos that want posts to start a set way, commit shas in backticks, commit shas in backticks, links in backticks, blank lines in `<details>`, SPDX licence ids, `@` mentions outside code, a TL;DR on long posts with its word threshold and sentence cap from config, the footer, banned phrases, private paths such as a home folder), printing only the problems
 - **Outside checkers:** `lines` mode (a command and a fail regex) and `json` mode (Vale first)
 - **`set`:** replace one sentence by its id, behind two guards a rewrite must pass: it keeps every number, commit sha and inline-code span of the old sentence, and a sentence under a heading listed in `keep_negation` (a "Not run" list, say) keeps its negation, so a step that never ran can't be reworded into one that did
 - **`fix`:** safe mechanical edits shown as a diff, written only with `--write`, idempotent, never touching code, quotes, tables, link text or the footer. One opt-in exception to the quotes rule, per repo: `code_names` turns a quoted test name, a listed CI check name or a CI state (`passed`, `failed`, `skipped`) into inline code

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import argparse, bisect, re, sys
+import argparse, bisect, os, re, sys, tomllib
 from collections import namedtuple
 
 __version__ = "0.1.0.dev0"
@@ -285,6 +285,249 @@ def read_prose(text, footer=None):
             line = owners[a + len(seg) - len(seg.lstrip())]
             out.append((s, line, ari(prose)))
     return [Sentence(f"S{i}", line, s, g) for i, (s, line, g) in enumerate(out, 1)]
+
+
+class ConfigError(Exception):
+    pass
+
+
+def find_config(env):
+    for key in ("FURBISH_CONFIG", "XDG_CONFIG_HOME", "HOME"):
+        val = env.get(key)
+        if not val:
+            continue
+        if key == "FURBISH_CONFIG":
+            if not os.path.isfile(val):
+                raise ConfigError(f"FURBISH_CONFIG points to {val} which does not exist")
+            return val
+        if key == "XDG_CONFIG_HOME":
+            path = os.path.join(val, "furbish", "config.toml")
+        else:
+            path = os.path.join(val, ".config", "furbish", "config.toml")
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def _validate_repo_name(name):
+    if name.count("/") != 1:
+        raise ConfigError(f"repo key {name} must contain exactly one slash")
+    owner, repo = name.split("/")
+    if not owner or not repo:
+        raise ConfigError(f"repo key {name} has empty owner or name")
+    if any(c.isspace() for c in name):
+        raise ConfigError(f"repo key {name} contains whitespace")
+
+
+def _validate_string(key, val, repo):
+    if not isinstance(val, str):
+        raise ConfigError(f"{key} in {repo} must be a string")
+
+
+def _validate_nonempty_string(key, val, repo):
+    _validate_string(key, val, repo)
+    if not val:
+        raise ConfigError(f"{key} in {repo} must be non-empty")
+
+
+def _validate_list_of_strings(key, val, repo):
+    if not isinstance(val, list):
+        raise ConfigError(f"{key} in {repo} must be a list")
+    for item in val:
+        if not isinstance(item, str):
+            raise ConfigError(f"{key} in {repo} must contain only strings")
+        if not item:
+            raise ConfigError(f"{key} in {repo} must not contain empty strings")
+
+
+def _validate_int_at_least_one(key, val, repo):
+    if isinstance(val, bool):
+        raise ConfigError(f"{key} in {repo} must be an integer")
+    if not isinstance(val, int):
+        raise ConfigError(f"{key} in {repo} must be an integer")
+    if val < 1:
+        raise ConfigError(f"{key} in {repo} must be at least 1")
+
+
+def _validate_bool(key, val, repo):
+    if not isinstance(val, bool):
+        raise ConfigError(f"{key} in {repo} must be a boolean")
+
+
+def _validate_code_names(cn, repo):
+    if not isinstance(cn, dict):
+        raise ConfigError(f"code_names in {repo} must be a table")
+    for k in cn:
+        if k not in ("quoted_tests", "checks", "states"):
+            raise ConfigError(f"unknown key {k} in code_names in {repo}")
+    quoted_tests = cn.get("quoted_tests", False)
+    checks = cn.get("checks", [])
+    states = cn.get("states", [])
+    _validate_bool("quoted_tests", quoted_tests, repo)
+    _validate_list_of_strings("checks", checks, repo)
+    _validate_list_of_strings("states", states, repo)
+    return {"quoted_tests": quoted_tests, "checks": list(checks), "states": list(states)}
+
+
+def _validate_external(ext, repo):
+    if not isinstance(ext, list):
+        raise ConfigError(f"external in {repo} must be a list")
+    seen_names = set()
+    result = []
+    for entry in ext:
+        if not isinstance(entry, dict):
+            raise ConfigError(f"external entry in {repo} must be a table")
+        for k in entry:
+            if k not in ("name", "mode", "command", "fail"):
+                raise ConfigError(f"unknown key {k} in external entry in {repo}")
+        name = entry.get("name")
+        mode = entry.get("mode")
+        command = entry.get("command")
+        fail = entry.get("fail")
+        if name is None:
+            raise ConfigError(f"name is required in external entry in {repo}")
+        if not isinstance(name, str) or not name:
+            raise ConfigError(f"name in external entry in {repo} must be a non-empty string")
+        if name in seen_names:
+            raise ConfigError(f"duplicate name {name} in external in {repo}")
+        seen_names.add(name)
+        if mode is None:
+            raise ConfigError(f"mode is required in external entry in {repo}")
+        if mode not in ("lines", "json"):
+            raise ConfigError(f"mode in external entry in {repo} must be 'lines' or 'json'")
+        if command is None:
+            raise ConfigError(f"command is required in external entry in {repo}")
+        if not isinstance(command, list) or not command:
+            raise ConfigError(f"command in external entry in {repo} must be a non-empty list")
+        for cmd in command:
+            if not isinstance(cmd, str) or not cmd:
+                raise ConfigError(f"command in external entry in {repo} must contain non-empty strings")
+        if mode == "lines":
+            if fail is None:
+                raise ConfigError(f"fail is required when mode is 'lines' in external entry in {repo}")
+            if not isinstance(fail, str):
+                raise ConfigError(f"fail in external entry in {repo} must be a string")
+            if not fail:
+                raise ConfigError(f"fail in external entry in {repo} must not be empty")
+            try:
+                re.compile(fail)
+            except (re.error, OverflowError, RecursionError):
+                raise ConfigError(f"fail in external entry in {repo} is not a valid regex")
+        else:
+            if fail is not None:
+                raise ConfigError(f"fail is not allowed when mode is 'json' in external entry in {repo}")
+        result.append({"name": name, "mode": mode, "command": list(command), "fail": fail if mode == "lines" else None})
+    return result
+
+
+def _validate_profile(profile, repo):
+    if not isinstance(profile, dict):
+        raise ConfigError(f"profile for {repo} must be a table")
+    allowed = {"pr_template", "issue_template", "first_line_prefix", "footer", "tldr", "tldr_words", "tldr_max_sentences", "banned", "private", "keep_negation", "code_names", "external"}
+    for k in profile:
+        if k not in allowed:
+            raise ConfigError(f"unknown key {k} in profile for {repo}")
+    pr_template = profile.get("pr_template")
+    if pr_template is not None:
+        _validate_string("pr_template", pr_template, repo)
+        pr_template = os.path.expanduser(pr_template)
+    issue_template = profile.get("issue_template")
+    if issue_template is not None:
+        _validate_string("issue_template", issue_template, repo)
+        issue_template = os.path.expanduser(issue_template)
+    first_line_prefix = profile.get("first_line_prefix")
+    if first_line_prefix is not None:
+        _validate_nonempty_string("first_line_prefix", first_line_prefix, repo)
+    footer = profile.get("footer")
+    if footer is not None:
+        _validate_string("footer", footer, repo)
+        try:
+            re.compile(footer)
+        except (re.error, OverflowError, RecursionError):
+            raise ConfigError(f"footer in {repo} is not a valid regex")
+    tldr = profile.get("tldr", "off")
+    if tldr not in ("required", "off"):
+        raise ConfigError(f"tldr in {repo} must be 'required' or 'off'")
+    tldr_words = profile.get("tldr_words")
+    tldr_max_sentences = profile.get("tldr_max_sentences")
+    if tldr == "required":
+        if tldr_words is None:
+            raise ConfigError(f"tldr_words is required when tldr is 'required' in {repo}")
+        if tldr_max_sentences is None:
+            raise ConfigError(f"tldr_max_sentences is required when tldr is 'required' in {repo}")
+    if tldr_words is not None:
+        _validate_int_at_least_one("tldr_words", tldr_words, repo)
+    if tldr_max_sentences is not None:
+        _validate_int_at_least_one("tldr_max_sentences", tldr_max_sentences, repo)
+    banned = profile.get("banned", [])
+    _validate_list_of_strings("banned", banned, repo)
+    private = profile.get("private", [])
+    _validate_list_of_strings("private", private, repo)
+    keep_negation = profile.get("keep_negation", [])
+    _validate_list_of_strings("keep_negation", keep_negation, repo)
+    code_names = profile.get("code_names", {})
+    code_names = _validate_code_names(code_names, repo)
+    external = profile.get("external", [])
+    external = _validate_external(external, repo)
+    return {
+        "pr_template": pr_template,
+        "issue_template": issue_template,
+        "first_line_prefix": first_line_prefix,
+        "footer": footer,
+        "tldr": tldr,
+        "tldr_words": tldr_words,
+        "tldr_max_sentences": tldr_max_sentences,
+        "banned": list(banned),
+        "private": list(private),
+        "keep_negation": list(keep_negation),
+        "code_names": code_names,
+        "external": external,
+    }
+
+
+def _normalise(data):
+    for k in data:
+        if k not in ("default_repo", "repo"):
+            raise ConfigError(f"unknown setting {k}")
+    default_repo = data.get("default_repo")
+    if default_repo is not None:
+        if not isinstance(default_repo, str):
+            raise ConfigError("default_repo must be a string")
+        _validate_repo_name(default_repo)
+    table = data.get("repo", {})
+    if not isinstance(table, dict):
+        raise ConfigError("repo must be a table")
+    profiles = {}
+    for name, profile in table.items():
+        _validate_repo_name(name)
+        profiles[name] = _validate_profile(profile, name)
+    if default_repo is not None and default_repo not in profiles:
+        raise ConfigError(f"default_repo {default_repo} has no profile")
+    return {"default_repo": default_repo, "repo": profiles}
+
+
+def load_config(path):
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+        return _normalise(data)
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError, OSError, RecursionError, ConfigError) as e:
+        raise ConfigError(f"{path}: {e}") from None
+
+
+def pick_profile(config, repo):
+    if config is None:
+        if repo is not None:
+            raise ConfigError(f"no config file but repo {repo} was requested")
+        return None
+    if repo is None:
+        repo = config.get("default_repo")
+        if repo is None:
+            return None
+    if repo not in config["repo"]:
+        known = ", ".join(sorted(config["repo"]))
+        raise ConfigError(f"repo {repo} not found; known repos: {known}")
+    return config["repo"][repo]
 
 
 def main():

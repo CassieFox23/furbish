@@ -1,4 +1,4 @@
-import importlib.util, os, subprocess, sys, time, unittest
+import importlib.util, os, subprocess, sys, tempfile, time, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(HERE, "..", "furbish.py")
@@ -187,6 +187,231 @@ class TestMadeUpDrafts(unittest.TestCase):
         self.assertIn("The issue seems to be related to memory allocation, e.g., version 2.4.1 shows a latency of 0.75ms under normal conditions.", t)
         self.assertIn("Error: CRITICAL_FAILURE detected in module handler", t)
         self.assertEqual(t.count("Open the application in a standard browser window."), 1)
+
+
+EXAMPLE = '''default_repo = "example-org/example"
+
+[repo."example-org/example"]
+pr_template = "/path/to/example/pull_request_template.md"
+issue_template = "/path/to/example/issue_template.md"
+first_line_prefix = "Example:"
+footer = "^-- Sent from the made-up example footer$"
+tldr = "required"
+tldr_words = 100
+tldr_max_sentences = 3
+banned = ["circle back", "synergy"]
+private = ["/home/", "/Users/", "example-hostname"]
+keep_negation = ["Not run"]
+
+[repo."example-org/example".code_names]
+quoted_tests = true
+checks = ["Example lint", "Example unit tests"]
+states = ["passed", "failed", "skipped"]
+
+[[repo."example-org/example".external]]
+name = "example-lines"
+mode = "lines"
+command = ["example-checker", "--plain"]
+fail = "^FAIL"
+
+[[repo."example-org/example".external]]
+name = "example-json"
+mode = "json"
+command = ["example-json-checker"]
+'''
+
+
+class ConfigCase(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = tmp.name
+
+    def write(self, text, name="config.toml"):
+        path = os.path.join(self.tmp, name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return path
+
+    def load(self, text):
+        return furbish.load_config(self.write(text))
+
+    def bad(self, text, *words):
+        path = self.write(text)
+        with self.assertRaises(furbish.ConfigError) as cm:
+            furbish.load_config(path)
+        msg = str(cm.exception)
+        self.assertIn(path, msg)
+        for w in words:
+            self.assertIn(w, msg)
+
+
+class TestFindConfig(ConfigCase):
+    def test_nothing_set_and_no_file_gives_none(self):
+        self.assertIsNone(furbish.find_config({"HOME": self.tmp}))
+
+    def test_furbish_config_wins(self):
+        a = self.write("", "a.toml")
+        self.write("", "xdg/furbish/config.toml")
+        self.write("", "home/.config/furbish/config.toml")
+        env = {"FURBISH_CONFIG": a, "XDG_CONFIG_HOME": os.path.join(self.tmp, "xdg"), "HOME": os.path.join(self.tmp, "home")}
+        self.assertEqual(furbish.find_config(env), a)
+
+    def test_xdg_comes_before_home(self):
+        x = self.write("", "xdg/furbish/config.toml")
+        self.write("", "home/.config/furbish/config.toml")
+        env = {"XDG_CONFIG_HOME": os.path.join(self.tmp, "xdg"), "HOME": os.path.join(self.tmp, "home")}
+        self.assertEqual(furbish.find_config(env), x)
+
+    def test_home_is_the_last_stop(self):
+        h = self.write("", "home/.config/furbish/config.toml")
+        env = {"XDG_CONFIG_HOME": os.path.join(self.tmp, "xdg"), "HOME": os.path.join(self.tmp, "home")}
+        self.assertEqual(furbish.find_config(env), h)
+
+    def test_empty_variables_count_as_unset(self):
+        h = self.write("", "home/.config/furbish/config.toml")
+        env = {"FURBISH_CONFIG": "", "XDG_CONFIG_HOME": "", "HOME": os.path.join(self.tmp, "home")}
+        self.assertEqual(furbish.find_config(env), h)
+
+    def test_furbish_config_pointing_nowhere_is_an_error(self):
+        missing = os.path.join(self.tmp, "nope.toml")
+        with self.assertRaises(furbish.ConfigError) as cm:
+            furbish.find_config({"FURBISH_CONFIG": missing, "HOME": self.tmp})
+        self.assertIn("FURBISH_CONFIG", str(cm.exception))
+        self.assertIn(missing, str(cm.exception))
+
+
+class TestLoadConfig(ConfigCase):
+    def test_empty_file(self):
+        self.assertEqual(self.load(""), {"default_repo": None, "repo": {}})
+
+    def test_the_example_in_config_md(self):
+        c = self.load(EXAMPLE)
+        self.assertEqual(c["default_repo"], "example-org/example")
+        p = c["repo"]["example-org/example"]
+        self.assertEqual(p["pr_template"], "/path/to/example/pull_request_template.md")
+        self.assertEqual(p["issue_template"], "/path/to/example/issue_template.md")
+        self.assertEqual(p["first_line_prefix"], "Example:")
+        self.assertEqual(p["footer"], "^-- Sent from the made-up example footer$")
+        self.assertEqual((p["tldr"], p["tldr_words"], p["tldr_max_sentences"]), ("required", 100, 3))
+        self.assertEqual(p["banned"], ["circle back", "synergy"])
+        self.assertEqual(p["private"], ["/home/", "/Users/", "example-hostname"])
+        self.assertEqual(p["keep_negation"], ["Not run"])
+        self.assertEqual(p["code_names"], {"quoted_tests": True, "checks": ["Example lint", "Example unit tests"], "states": ["passed", "failed", "skipped"]})
+        self.assertEqual(p["external"], [
+            {"name": "example-lines", "mode": "lines", "command": ["example-checker", "--plain"], "fail": "^FAIL"},
+            {"name": "example-json", "mode": "json", "command": ["example-json-checker"], "fail": None},
+        ])
+
+    def test_omitted_keys_get_plain_defaults(self):
+        p = self.load('[repo."a/b"]\n')["repo"]["a/b"]
+        self.assertEqual(p, {
+            "pr_template": None, "issue_template": None, "first_line_prefix": None, "footer": None,
+            "tldr": "off", "tldr_words": None, "tldr_max_sentences": None,
+            "banned": [], "private": [], "keep_negation": [],
+            "code_names": {"quoted_tests": False, "checks": [], "states": []},
+            "external": [],
+        })
+
+    def test_template_paths_expand_a_home_folder(self):
+        p = self.load('[repo."a/b"]\npr_template = "~/t.md"\n')["repo"]["a/b"]
+        self.assertEqual(p["pr_template"], os.path.expanduser("~/t.md"))
+
+    def test_broken_toml_names_the_file(self):
+        self.bad("this is = = not toml")
+
+    def test_unknown_top_level_key(self):
+        self.bad('default_repo = "a/b"\nflavour = "x"\n[repo."a/b"]\n', "flavour")
+
+    def test_unknown_profile_key_names_key_and_repo(self):
+        self.bad('[repo."a/b"]\nbaned = ["x"]\n', "baned", "a/b")
+
+    def test_unknown_code_names_key(self):
+        self.bad('[repo."a/b".code_names]\nquoted = true\n', "quoted")
+
+    def test_repo_name_must_be_owner_slash_name(self):
+        self.bad('[repo."justaname"]\n', "justaname")
+        self.bad('[repo."a/b/c"]\n', "a/b/c")
+
+    def test_default_repo_must_have_a_profile(self):
+        self.bad('default_repo = "a/b"\n[repo."c/d"]\n', "a/b")
+        self.bad('default_repo = "a/b"\n', "a/b")
+
+    def test_wrong_types(self):
+        self.bad('[repo."a/b"]\ntldr_words = "100"\n', "tldr_words", "a/b")
+        self.bad('[repo."a/b"]\ntldr_words = 0\n', "tldr_words")
+        self.bad('[repo."a/b"]\ntldr_words = true\n', "tldr_words")
+        self.bad('[repo."a/b"]\nbanned = "x"\n', "banned")
+        self.bad('[repo."a/b"]\nbanned = ["x", 3]\n', "banned")
+        self.bad('[repo."a/b"]\nbanned = [""]\n', "banned")
+        self.bad('[repo."a/b"]\nfooter = 5\n', "footer")
+        self.bad('[repo."a/b".code_names]\nquoted_tests = "yes"\n', "quoted_tests")
+        self.bad('[repo."a/b"]\nfirst_line_prefix = ""\n', "first_line_prefix")
+
+    def test_footer_and_fail_must_be_real_regexes(self):
+        self.bad('[repo."a/b"]\nfooter = "(unclosed"\n', "footer")
+        self.bad('[repo."a/b"]\n[[repo."a/b".external]]\nname = "x"\nmode = "lines"\ncommand = ["c"]\nfail = "[bad"\n', "fail")
+
+    def test_a_regex_that_cannot_be_built_is_an_error_not_a_crash(self):
+        self.bad('[repo."a/b"]\nfooter = "a{99999999999999999999}"\n', "footer")
+        self.bad('[repo."a/b"]\nfooter = "' + "(" * 5000 + ")" * 5000 + '"\n', "footer")
+        self.bad('[repo."a/b"]\n[[repo."a/b".external]]\nname = "x"\nmode = "lines"\ncommand = ["c"]\nfail = "a{99999999999999999999}"\n', "fail")
+
+    def test_a_file_nested_too_deep_is_an_error_not_a_crash(self):
+        self.bad("a = " + "[" * 5000 + "]" * 5000 + "\n")
+
+    def test_an_empty_fail_pattern_is_an_error(self):
+        self.bad('[repo."a/b"]\n[[repo."a/b".external]]\nname = "x"\nmode = "lines"\ncommand = ["c"]\nfail = ""\n', "fail")
+
+    def test_tldr_values(self):
+        self.bad('[repo."a/b"]\ntldr = "sometimes"\n', "tldr")
+        self.bad('[repo."a/b"]\ntldr = "required"\ntldr_max_sentences = 3\n', "tldr_words")
+        self.bad('[repo."a/b"]\ntldr = "required"\ntldr_words = 100\n', "tldr_max_sentences")
+        p = self.load('[repo."a/b"]\ntldr = "off"\n')["repo"]["a/b"]
+        self.assertEqual(p["tldr"], "off")
+
+    def test_external_checker_rules(self):
+        head = '[repo."a/b"]\n[[repo."a/b".external]]\n'
+        self.bad(head + 'name = "x"\nmode = "other"\ncommand = ["c"]\n', "mode")
+        self.bad(head + 'name = "x"\nmode = "lines"\ncommand = ["c"]\n', "fail")
+        self.bad(head + 'name = "x"\nmode = "json"\ncommand = ["c"]\nfail = "^F"\n', "fail")
+        self.bad(head + 'name = "x"\nmode = "json"\ncommand = []\n', "command")
+        self.bad(head + 'name = "x"\nmode = "json"\n', "command")
+        self.bad(head + 'mode = "json"\ncommand = ["c"]\n', "name")
+        self.bad(head + 'name = "x"\nmode = "json"\ncommand = ["c"]\nextra = 1\n', "extra")
+        self.bad(head + 'name = "dup-name"\nmode = "json"\ncommand = ["c"]\n[[repo."a/b".external]]\nname = "dup-name"\nmode = "json"\ncommand = ["d"]\n', "dup-name")
+
+    def test_loading_twice_gives_equal_results(self):
+        path = self.write(EXAMPLE)
+        self.assertEqual(furbish.load_config(path), furbish.load_config(path))
+
+
+class TestPickProfile(ConfigCase):
+    def test_explicit_repo_wins_over_default(self):
+        c = self.load('default_repo = "a/b"\n[repo."a/b"]\nbanned = ["one"]\n[repo."c/d"]\nbanned = ["two"]\n')
+        self.assertEqual(furbish.pick_profile(c, "c/d")["banned"], ["two"])
+
+    def test_default_repo_is_used_when_none_is_given(self):
+        c = self.load('default_repo = "a/b"\n[repo."a/b"]\nbanned = ["one"]\n')
+        self.assertEqual(furbish.pick_profile(c, None)["banned"], ["one"])
+
+    def test_no_repo_and_no_default_means_no_profile(self):
+        self.assertIsNone(furbish.pick_profile(self.load('[repo."a/b"]\n'), None))
+        self.assertIsNone(furbish.pick_profile(None, None))
+
+    def test_unknown_repo_lists_the_known_ones(self):
+        c = self.load('[repo."a/b"]\n[repo."c/d"]\n')
+        with self.assertRaises(furbish.ConfigError) as cm:
+            furbish.pick_profile(c, "x/y")
+        msg = str(cm.exception)
+        for w in ("x/y", "a/b", "c/d"):
+            self.assertIn(w, msg)
+
+    def test_a_repo_without_any_config_file_is_an_error(self):
+        with self.assertRaises(furbish.ConfigError) as cm:
+            furbish.pick_profile(None, "x/y")
+        self.assertIn("x/y", str(cm.exception))
 
 
 if __name__ == "__main__":
