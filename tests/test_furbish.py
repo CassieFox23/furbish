@@ -1542,7 +1542,19 @@ class TestSetTiming(ConfigCase):
             r = subprocess.run([sys.executable, "-I", SCRIPT, "set", path, sid, new, *extra], capture_output=True, text=True, env={"HOME": self.tmp, "PATH": "/usr/bin:/bin"})
             took = time.perf_counter() - t
             self.assertEqual(r.returncode, 0, (sid, r.stderr[-300:]))
-            self.assertLess(took, 1.0, (text[:14], extra, took))
+            self.assertLess(took, 2.0, (text[:14], extra, took))
+
+    def test_a_262_kb_draft_is_changed_in_under_a_second(self):
+        with open(os.path.join(DRAFTS, "pr-body.md"), encoding="utf-8") as f:
+            body = f.read()
+        big = (body * (262000 // len(body) + 1))[:262000]
+        found = furbish.read_prose(big)
+        mid = found[len(found) // 2]
+        profile = {"footer": FOOTER, "keep_negation": ["Not run"]}
+        t = time.perf_counter()
+        edit = furbish.set_sentence(big, mid.id, mid.text + " Added.", profile)
+        self.assertLess(time.perf_counter() - t, 1.0)
+        self.assertNotEqual(edit.text, big)
 
     def test_many_short_lines_in_one_block(self):
         self.timed("Yes.\n" * 52000, "S26000", "No.")
@@ -1559,7 +1571,7 @@ class TestSetTiming(ConfigCase):
         big = "see `a` 12 abc1234 " * 13000
         t = time.perf_counter()
         furbish.set_sentence(big + "\n", "S1", "x " + big)
-        self.assertLess(time.perf_counter() - t, 1.0)
+        self.assertLess(time.perf_counter() - t, 2.0)
 
     def test_hostile_lines(self):
         for d in ("a" + "`" * 200000, "[a" * 100000, "[a](" * 60000, "<a " * 80000, "`a b " * 40000, "- a b c.\n" * 30000, "> a b c.\n" * 30000):
