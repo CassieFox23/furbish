@@ -19,11 +19,36 @@ It covers GitHub pull request and issue text only: comments, reviews, and bodies
 - Python 3.11 or newer, standard library only
 - Optional outside programs (hunspell, vale, harper-cli), run only if your config names them
 
-## Licence
+## Install
 
-GPL-3.0-only. See [LICENSE](LICENSE).
+Nothing to install yet. Clone the repo and run `furbish.py` with Python 3:
+
+```bash
+git clone https://github.com/CassieFox23/furbish.git
+cd furbish
+```
+
+## Use
+
+Only `--help` and `--version` work today:
+
+```bash
+python3 furbish.py --version
+```
+
+```
+furbish 0.1.0.dev0
+```
+
+## Help
+
+Questions and bug reports go in [GitHub issues](https://github.com/CassieFox23/furbish/issues).
 
 ## Contributing
 
 - Issues and pull requests: [CONTRIBUTING.md](CONTRIBUTING.md)
 - AI tools are fine when you say so: [AI_POLICY.md](AI_POLICY.md)
+
+## Licence
+
+GPL-3.0-only. Copyright Cassie_Fox. See [LICENSE](LICENSE).
