@@ -140,6 +140,10 @@ class TestReadProse(unittest.TestCase):
         s = furbish.read_prose("Main one.\r\n\r\nNext one.\r\n\r\n-- Sent from the made-up example footer\r\n", FOOTER)
         self.assertEqual([(x.text, x.line) for x in s], [("Main one.", 1), ("Next one.", 3)])
 
+    def test_a_one_line_code_span_is_not_a_fence(self):
+        self.assertEqual(texts("```npm test```\n\nSee it here.\n"), ["See it here."])
+        self.assertEqual(texts("```python\nx. Y.\n```\nAfter it.\n"), ["After it."])
+
     def test_same_draft_gives_same_result(self):
         d = "One. Two.\n\n```\nthree\n```\n"
         self.assertEqual(furbish.read_prose(d), furbish.read_prose(d))
@@ -412,6 +416,408 @@ class TestPickProfile(ConfigCase):
         with self.assertRaises(furbish.ConfigError) as cm:
             furbish.pick_profile(None, "x/y")
         self.assertIn("x/y", str(cm.exception))
+
+
+HARD = "Unquestionably, the implementation's architectural characteristics necessitate comprehensive reconsideration."
+EASY = "Run the tests before you push."
+
+
+def prof(**kw):
+    p = {
+        "pr_template": None, "issue_template": None, "first_line_prefix": None, "footer": None,
+        "tldr": "off", "tldr_words": None, "tldr_max_sentences": None,
+        "banned": [], "private": [], "keep_negation": [],
+        "code_names": {"quoted_tests": False, "checks": [], "states": []},
+        "external": [],
+    }
+    p.update(kw)
+    return p
+
+
+def probs(text, profile=None, post=False, exempt=frozenset()):
+    return [(p.line, p.rule) for p in furbish.check(text, profile, post, exempt)]
+
+
+def words(n):
+    return " ".join(["word"] * n) + "."
+
+
+class TestCheckBasics(unittest.TestCase):
+    def test_clean_and_empty_drafts_have_no_problems(self):
+        self.assertEqual(probs("A short note here.\n"), [])
+        self.assertEqual(probs(""), [])
+
+    def test_problems_come_back_in_line_order(self):
+        self.assertEqual(probs("Fixed in `c1217e711`.\n\nThanks @someone.\n"), [(1, "sha"), (3, "mention")])
+        self.assertEqual(probs("Thanks @someone.\n\nFixed in `c1217e711`.\n"), [(1, "mention"), (3, "sha")])
+
+    def test_a_problem_says_what_is_wrong_in_words(self):
+        (p,) = furbish.check("Thanks @someone for this.\n")
+        self.assertEqual((p.line, p.rule, p.sid), (1, "mention", ""))
+        self.assertIn("@someone", p.message)
+
+    def test_crlf_drafts_give_the_same_problems(self):
+        self.assertEqual(probs("Thanks @someone.\r\n\r\nFixed in `c1217e711`.\r\n"), [(1, "mention"), (3, "sha")])
+
+
+class TestCheckGrade(unittest.TestCase):
+    def test_the_sentences_used_below_are_what_they_claim_to_be(self):
+        self.assertGreaterEqual(furbish.ari(HARD), 10)
+        self.assertLess(furbish.ari(EASY), 10)
+
+    def test_grade_runs_only_with_post(self):
+        self.assertEqual(probs(HARD + "\n"), [])
+        self.assertEqual(probs(HARD + "\n", post=True), [(1, "grade")])
+
+    def test_a_grade_problem_names_the_sentence(self):
+        (p,) = furbish.check(EASY + "\n\n" + HARD + "\n", post=True)
+        self.assertEqual((p.line, p.sid, p.rule), (3, "S2", "grade"))
+        self.assertIn("10", p.message)
+
+    def test_an_easy_sentence_passes(self):
+        self.assertEqual(probs(EASY + "\n", post=True), [])
+
+    def test_template_lines_are_exempt(self):
+        self.assertEqual(probs(HARD + "\n", post=True, exempt={HARD}), [])
+        self.assertEqual(probs("  " + HARD + "  \n", post=True, exempt={HARD}), [])
+        self.assertEqual(probs(HARD + " More.\n", post=True, exempt={HARD}), [(1, "grade")])
+
+    def test_headings_checkboxes_and_short_sentences_are_exempt(self):
+        self.assertEqual(probs("## " + HARD + "\n", post=True), [])
+        self.assertEqual(probs("- [ ] " + HARD + "\n- [x] " + HARD + "\n", post=True), [])
+        self.assertEqual(probs("Unquestionably incomprehensible.\n", post=True), [])
+
+    def test_a_list_item_is_graded(self):
+        self.assertEqual(probs("- " + HARD + "\n", post=True), [(1, "grade")])
+
+    def test_inline_code_and_urls_count_as_one_plain_word_each(self):
+        d = "Use `an_extraordinarily_long_identifier_name_here` and https://example.com/a/very/long/path/name today.\n"
+        self.assertEqual(probs(d, post=True), [])
+
+    def test_the_footer_is_not_graded(self):
+        d = EASY + "\n\n" + HARD + "\n"
+        self.assertEqual(probs(d, prof(footer="^" + HARD.replace(".", r"\.") + "$"), post=True), [])
+
+
+class TestCheckFirstLinePrefix(unittest.TestCase):
+    def test_prefix(self):
+        p = prof(first_line_prefix="Example:")
+        self.assertEqual(probs("Example: fine.\n", p), [])
+        self.assertEqual(probs("Nope, fine.\n", p), [(1, "prefix")])
+        self.assertEqual(probs("\n\nNope, fine.\n", p), [(3, "prefix")])
+        self.assertEqual(probs("", p), [])
+
+
+class TestCheckShaAndUrlInCode(unittest.TestCase):
+    def test_a_sha_in_backticks_is_flagged(self):
+        self.assertEqual(probs("Fixed in `c1217e711` today.\n"), [(1, "sha")])
+        self.assertEqual(probs("Fixed in `c1217e711c9a3b2d4e5f60718293a4b5c6d7e8f9` today.\n"), [(1, "sha")])
+
+    def test_things_that_are_not_shas_pass(self):
+        for d in ["Fixed in c1217e711 today.\n", "Word `deadbeef` here.\n", "Count `1234567` here.\n", "Short `abc123` here.\n", "Mixed `c1217e711 and more` here.\n", "```\nfixed `c1217e711`\n```\n"]:
+            self.assertEqual(probs(d), [], d)
+
+    def test_a_url_in_backticks_is_flagged(self):
+        self.assertEqual(probs("See `https://example.com/a` now.\n"), [(1, "url-in-code")])
+        self.assertEqual(probs("See `http://example.com` now.\n"), [(1, "url-in-code")])
+
+    def test_urls_outside_backticks_and_in_fences_pass(self):
+        self.assertEqual(probs("See https://example.com/a now.\n"), [])
+        self.assertEqual(probs("```\ncurl `https://example.com/a`\n```\n"), [])
+
+
+class TestCheckDetails(unittest.TestCase):
+    def test_a_well_formed_fold_passes(self):
+        d = "Intro.\n\n<details>\n<summary>Test setup</summary>\n\n- Box: Nobara\n\n</details>\n"
+        self.assertEqual(probs(d), [])
+
+    def test_no_blank_line_after_the_summary(self):
+        d = "Intro.\n\n<details>\n<summary>Test setup</summary>\n- Box: Nobara\n\n</details>\n"
+        self.assertEqual(probs(d), [(4, "details-blank")])
+
+    def test_no_blank_line_before_the_closing_tag(self):
+        d = "<details>\n<summary>Log</summary>\n\nBody.\n</details>\n"
+        self.assertEqual(probs(d), [(5, "details-blank")])
+
+    def test_both_problems_are_reported(self):
+        d = "<details>\n<summary>Log</summary>\nBody.\n</details>\n"
+        self.assertEqual(probs(d), [(2, "details-blank"), (4, "details-blank")])
+
+    def test_a_one_line_code_span_does_not_hide_the_rest_of_the_draft(self):
+        self.assertEqual(probs("```npm test```\nSee `abcdef1` for details.\n"), [(2, "sha")])
+
+    def test_a_fence_that_opens_where_a_comment_closes_is_code(self):
+        self.assertEqual(probs("<!--\n--> ```\nuse `abc1234` here\n```\n"), [])
+
+    def test_folds_inside_code_are_ignored(self):
+        self.assertEqual(probs("```\n<details>\n<summary>x</summary>\ntext\n</details>\n```\n"), [])
+
+
+class TestCheckSpdx(unittest.TestCase):
+    def test_informal_licence_names_are_flagged(self):
+        for d in ["Licensed under GPLv2.", "It is AGPLv3 code.", "We use LGPLv2.1 here.", "The GPL 3 text.", "GPL v3 or later.", "Plain GPL3 here.", "Apache 2.0 licence.", "Apache License 2.0 here.", "Released as BSD 3-clause."]:
+            self.assertEqual(probs(d + "\n"), [(1, "spdx")], d)
+
+    def test_spdx_ids_and_plain_words_pass(self):
+        for d in ["Licensed under GPL-2.0-only.", "It is AGPL-3.0-or-later code.", "BSD-3-Clause here.", "Apache-2.0 here.", "The GPL is a licence.", "MIT licensed.", "Uses LGPL-2.1-or-later."]:
+            self.assertEqual(probs(d + "\n"), [], d)
+
+    def test_code_is_ignored(self):
+        self.assertEqual(probs("`GPLv2` is wrong.\n"), [])
+        self.assertEqual(probs("```\nGPLv2\n```\n"), [])
+
+
+class TestCheckMentions(unittest.TestCase):
+    def test_mentions_are_flagged(self):
+        for d in ["Thanks @someone for this.", "(cc @some-one)", "@someone first."]:
+            self.assertEqual(probs(d + "\n"), [(1, "mention")], d)
+
+    def test_each_mention_is_its_own_problem(self):
+        self.assertEqual(probs("Thanks @one and @two.\n"), [(1, "mention"), (1, "mention")])
+
+    def test_emails_code_and_a_lone_at_sign_pass(self):
+        for d in ["Mail a@b.com now.", "Use `@claude` here.", "An @ alone.", "```\n@someone\n```"]:
+            self.assertEqual(probs(d + "\n"), [], d)
+
+
+class TestCheckTldr(unittest.TestCase):
+    P = prof(tldr="required", tldr_words=20, tldr_max_sentences=2)
+
+    def test_short_posts_need_no_tldr(self):
+        self.assertEqual(probs(words(19) + "\n", self.P), [])
+
+    def test_a_long_post_needs_one(self):
+        self.assertEqual(probs(words(20) + "\n", self.P), [(1, "tldr")])
+
+    def test_a_tldr_line_satisfies_it(self):
+        self.assertEqual(probs("**TL;DR:** Short summary here.\n\n" + words(25) + "\n", self.P), [])
+
+    def test_the_tldr_must_come_first(self):
+        self.assertEqual(probs("Intro line first.\n\n**TL;DR:** Short.\n\n" + words(25) + "\n", self.P), [(1, "tldr")])
+        self.assertEqual(probs("\n\n**TL;DR:** Short.\n\n" + words(25) + "\n", self.P), [])
+
+    def test_a_tldr_over_the_sentence_cap(self):
+        self.assertEqual(probs("**TL;DR:** One thing. Two things. Three things.\n", self.P), [(1, "tldr")])
+        self.assertEqual(probs("**TL;DR:** One thing. Two things.\n", self.P), [])
+
+    def test_words_in_folds_do_not_count(self):
+        d = "Short note.\n\n<details>\n<summary>Log</summary>\n\n" + words(40) + "\n\n</details>\n"
+        self.assertEqual(probs(d, self.P), [])
+
+    def test_the_footer_does_not_count(self):
+        p = prof(tldr="required", tldr_words=20, tldr_max_sentences=2, footer=FOOTER)
+        self.assertEqual(probs(words(15) + "\n\n-- Sent from the made-up example footer\n", p), [])
+
+    def test_a_first_line_prefix_comes_before_the_tldr(self):
+        p = prof(tldr="required", tldr_words=20, tldr_max_sentences=2, first_line_prefix="[AUTO] ")
+        self.assertEqual(probs("[AUTO] **TL;DR:** Short summary.\n\n" + words(25) + "\n", p), [])
+
+    def test_off_means_off(self):
+        self.assertEqual(probs(words(500) + "\n", prof(tldr="off")), [])
+
+
+class TestCheckFooter(unittest.TestCase):
+    P = prof(footer=FOOTER)
+
+    def test_the_last_line_must_be_the_footer(self):
+        self.assertEqual(probs("Body here.\n\n-- Sent from the made-up example footer\n", self.P), [])
+        self.assertEqual(probs("Body here.\n", self.P), [(1, "footer")])
+        self.assertEqual(probs("-- Sent from the made-up example footer\n\nBody after.\n", self.P), [(3, "footer")])
+
+    def test_trailing_blank_lines_and_crlf_are_fine(self):
+        self.assertEqual(probs("Body.\n\n-- Sent from the made-up example footer\n\n\n", self.P), [])
+        self.assertEqual(probs("Body.\r\n\r\n-- Sent from the made-up example footer\r\n", self.P), [])
+
+    def test_no_footer_setting_means_no_check(self):
+        self.assertEqual(probs("Body here.\n", prof()), [])
+
+
+class TestCheckBanned(unittest.TestCase):
+    P = prof(banned=["circle back", "synergy"])
+
+    def test_a_banned_phrase_is_flagged_with_its_sentence(self):
+        (p,) = furbish.check("We should circle back later.\n", self.P)
+        self.assertEqual((p.line, p.sid, p.rule), (1, "S1", "banned"))
+        self.assertIn("circle back", p.message)
+
+    def test_case_is_ignored_and_whole_words_are_needed(self):
+        self.assertEqual(probs("We should Circle Back later.\n", self.P), [(1, "banned")])
+        self.assertEqual(probs("Synergystic plans.\n", self.P), [])
+
+    def test_code_is_not_prose(self):
+        self.assertEqual(probs("Quote: `circle back` is banned.\n", self.P), [])
+        self.assertEqual(probs("```\ncircle back\n```\n", self.P), [])
+
+    def test_two_phrases_in_one_sentence_are_two_problems(self):
+        self.assertEqual(probs("Circle back for synergy.\n", self.P), [(1, "banned"), (1, "banned")])
+
+
+class TestCheckPrivate(unittest.TestCase):
+    P = prof(private=["/home/", "example-hostname"])
+
+    def test_private_text_is_flagged_anywhere(self):
+        self.assertEqual(probs("Path is /home/someone/x.\n", self.P), [(1, "private")])
+        self.assertEqual(probs("Intro.\n\n```\ncd /home/someone\n```\n", self.P), [(4, "private")])
+        self.assertEqual(probs("<!-- note: /home/someone -->\n", self.P), [(1, "private")])
+        self.assertEqual(probs("Host EXAMPLE-HOSTNAME here.\n", self.P), [(1, "private")])
+
+    def test_one_problem_per_string_per_line(self):
+        self.assertEqual(probs("/home/a and /home/b and example-hostname\n", self.P), [(1, "private"), (1, "private")])
+
+    def test_nothing_private_passes(self):
+        self.assertEqual(probs("A clean line.\n", self.P), [])
+
+
+class TestCheckOnMadeUpDrafts(unittest.TestCase):
+    def load(self, name):
+        with open(os.path.join(DRAFTS, name), encoding="utf-8") as f:
+            return f.read()
+
+    def test_pr_body_lacks_a_tldr(self):
+        p = prof(footer=FOOTER, tldr="required", tldr_words=50, tldr_max_sentences=3)
+        self.assertEqual(probs(self.load("pr-body.md"), p), [(1, "tldr")])
+
+    def test_issue_body_is_clean(self):
+        self.assertEqual(probs(self.load("issue-body.md"), prof(footer=FOOTER)), [])
+
+
+class TestCheckStaysFast(unittest.TestCase):
+    P = prof(footer=FOOTER, tldr="required", tldr_words=100, tldr_max_sentences=3, first_line_prefix="x", banned=[f"banned phrase {i}" for i in range(30)], private=["/home/", "example-hostname", "secret"])
+
+    def test_a_262_kb_draft_checks_in_under_a_second(self):
+        with open(os.path.join(DRAFTS, "pr-body.md"), encoding="utf-8") as f:
+            body = f.read()
+        big = (body * (262000 // len(body) + 1))[:262000]
+        for post in (False, True):
+            t = time.perf_counter()
+            furbish.check(big, self.P, post)
+            self.assertLess(time.perf_counter() - t, 1.0, post)
+
+    def test_hostile_text_stays_fast(self):
+        cases = [
+            "a" + "`" * 200000, "[a" * 100000, "[a](" * 60000, "<a " * 80000, "<" * 100000, ">" * 262000, "`a b " * 40000,
+            "@a " * 80000, "GPL " * 60000, "`abcdef1` " * 30000, "<details>\n<summary>x</summary>\n" * 8000,
+            "http://" * 30000, "/home/ " * 40000, "banned phrase 1 " * 15000, "`https://x.y/z` " * 15000, "a\n" * 130000, "Apache " * 30000,
+            "Yes. " * 52000, "  " + "Yes. " * 52000, "- a b c.\n" * 30000,
+        ]
+        for d in cases:
+            for post in (False, True):
+                t = time.perf_counter()
+                furbish.check(d, self.P, post)
+                self.assertLess(time.perf_counter() - t, 2.0, d[:14])
+
+
+class TestCheckCli(ConfigCase):
+    def env(self, **extra):
+        e = {"HOME": self.tmp, "PATH": "/usr/bin:/bin"}
+        e.update(extra)
+        return e
+
+    def run_check(self, *args, **extra):
+        return subprocess.run([sys.executable, "-I", SCRIPT, "check", *args], capture_output=True, text=True, env=self.env(**extra))
+
+    def draft(self, text, name="draft.md"):
+        return self.write(text, name)
+
+    def test_a_clean_draft_prints_nothing_and_exits_0(self):
+        r = self.run_check(self.draft("A short clean note.\n"))
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
+
+    def test_a_problem_prints_path_line_and_words_and_exits_1(self):
+        path = self.draft("Fine line.\n\nThanks @someone.\n")
+        r = self.run_check(path)
+        self.assertEqual(r.returncode, 1)
+        lines = r.stdout.splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].startswith(f"{path}:3: "), lines[0])
+        self.assertIn("@someone", lines[0])
+        self.assertEqual(r.stderr, "")
+
+    def test_a_sentence_problem_shows_its_id(self):
+        r = self.run_check("--post", self.draft(EASY + "\n\n" + HARD + "\n"))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(":3: S2: ", r.stdout)
+
+    def test_post_switches_the_reading_grade_on(self):
+        path = self.draft(HARD + "\n")
+        self.assertEqual(self.run_check(path).returncode, 0)
+        self.assertEqual(self.run_check("--post", path).returncode, 1)
+
+    def test_the_default_repo_profile_applies(self):
+        cfg = self.write('default_repo = "a/b"\n[repo."a/b"]\nfooter = "^END$"\n[repo."c/d"]\n', "cfg.toml")
+        path = self.draft("Body.\n")
+        r = self.run_check(path, FURBISH_CONFIG=cfg)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(":1: ", r.stdout)
+        self.assertIn("footer", r.stdout)
+        self.assertEqual(self.run_check("--repo", "c/d", path, FURBISH_CONFIG=cfg).returncode, 0)
+
+    def test_the_config_is_found_under_home(self):
+        self.write('default_repo = "a/b"\n[repo."a/b"]\nfooter = "^END$"\n', ".config/furbish/config.toml")
+        self.assertEqual(self.run_check(self.draft("Body.\n")).returncode, 1)
+
+    def test_template_lines_are_exempt_from_grading(self):
+        tpl = self.write(HARD + "\n", "tpl.md")
+        cfg = self.write(f'default_repo = "a/b"\n[repo."a/b"]\npr_template = "{tpl}"\n', "cfg.toml")
+        path = self.draft(HARD + "\n")
+        self.assertEqual(self.run_check("--post", path, FURBISH_CONFIG=cfg).returncode, 0)
+        self.assertEqual(self.run_check("--post", path).returncode, 1)
+
+    def test_a_missing_template_file_is_a_plain_error(self):
+        gone = os.path.join(self.tmp, "gone.md")
+        cfg = self.write(f'default_repo = "a/b"\n[repo."a/b"]\npr_template = "{gone}"\n', "cfg.toml")
+        r = self.run_check(self.draft("Body.\n"), FURBISH_CONFIG=cfg)
+        self.assertEqual((r.returncode, r.stdout), (2, ""))
+        self.assertIn(gone, r.stderr)
+
+    def test_an_unknown_repo_exits_2(self):
+        cfg = self.write('[repo."a/b"]\n', "cfg.toml")
+        r = self.run_check("--repo", "x/y", self.draft("Body.\n"), FURBISH_CONFIG=cfg)
+        self.assertEqual((r.returncode, r.stdout), (2, ""))
+        self.assertIn("x/y", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_a_repo_with_no_config_file_exits_2(self):
+        r = self.run_check("--repo", "x/y", self.draft("Body.\n"))
+        self.assertEqual((r.returncode, r.stdout), (2, ""))
+        self.assertIn("x/y", r.stderr)
+
+    def test_a_broken_config_exits_2_with_its_path(self):
+        cfg = self.write("this is = = not toml", "cfg.toml")
+        r = self.run_check(self.draft("Body.\n"), FURBISH_CONFIG=cfg)
+        self.assertEqual((r.returncode, r.stdout), (2, ""))
+        self.assertIn(cfg, r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_a_missing_draft_exits_2(self):
+        gone = os.path.join(self.tmp, "gone.md")
+        r = self.run_check(gone)
+        self.assertEqual((r.returncode, r.stdout), (2, ""))
+        self.assertIn(gone, r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_a_folder_instead_of_a_draft_exits_2(self):
+        r = self.run_check(self.tmp)
+        self.assertEqual(r.returncode, 2)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_a_draft_that_is_not_utf8_does_not_crash(self):
+        path = os.path.join(self.tmp, "bad.md")
+        with open(path, "wb") as f:
+            f.write(b"Bad \xff byte here.\n")
+        r = self.run_check(path)
+        self.assertEqual(r.returncode, 0)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_check_with_no_draft_is_a_usage_error(self):
+        self.assertEqual(self.run_check().returncode, 2)
+
+    def test_help_no_longer_lists_check_as_planned(self):
+        r = subprocess.run([sys.executable, "-I", SCRIPT, "--help"], capture_output=True, text=True, env=self.env())
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("check", r.stdout)
+        self.assertNotIn("planned: print only the problems", r.stdout)
+        self.assertIn("planned: replace one sentence", r.stdout)
 
 
 if __name__ == "__main__":

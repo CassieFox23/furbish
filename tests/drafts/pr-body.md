@@ -29,6 +29,7 @@ Please review the `canary_var` variable usage in the test scripts before deployi
 <summary>CANARY_CODE long log</summary>
 
 The automated build process completed successfully after the third retry attempt. All unit tests passed within the expected time frame for the current workload.
+
 </details>
 
 -- Sent from the made-up example footer

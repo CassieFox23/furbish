@@ -5,7 +5,6 @@ from collections import namedtuple
 __version__ = "0.1.0.dev0"
 
 PLANNED = """planned commands, not working yet:
-  check DRAFT            planned: print only the problems, with line and sentence id
   fix DRAFT [--write]    planned: safe mechanical edits, shown as a diff unless --write
   set DRAFT S12 "text"   planned: replace one sentence by its id
   split DRAFT            planned: suggest where to split long sentences"""
@@ -51,7 +50,9 @@ def _fence_open(line):
         return None
     c = rest[0]
     k = len(rest) - len(rest.lstrip(c))
-    return (c, k) if k >= 3 else None
+    if k < 3 or (c == "`" and "`" in rest[k:]):
+        return None
+    return (c, k)
 
 
 def _fence_close(line, c, k):
@@ -520,7 +521,7 @@ def load_config(path):
 def pick_profile(config, repo):
     if config is None:
         if repo is not None:
-            raise ConfigError(f"no config file but repo {repo} was requested")
+            raise ConfigError(f"no config file was found, so there is no profile for {repo}")
         return None
     if repo is None:
         repo = config.get("default_repo")
@@ -528,18 +529,306 @@ def pick_profile(config, repo):
             return None
     if repo not in config["repo"]:
         known = ", ".join(sorted(config["repo"]))
-        raise ConfigError(f"repo {repo} not found; known repos: {known}")
+        raise ConfigError(f"the config file has no profile for {repo}; it has: {known}")
     return config["repo"][repo]
+
+
+Problem = namedtuple("Problem", "line sid rule message")
+
+_MENTION = re.compile(r"(^|[\s(])@[A-Za-z0-9][A-Za-z0-9-]*")
+_SPDX_PATTERNS = (
+    re.compile(r"\b[AL]?GPL ?v?\d(?:\.\d)?\+?(?![\w-]|\.\d)"),
+    re.compile(r"\bApache(?: License)?,? (?:v|version )?2(?:\.0)?\b"),
+    re.compile(r"\bBSD [23](?:-| )[Cc]lause\b"),
+)
+_SHA_RE = re.compile(r"[0-9a-f]{7,40}")
+_LABEL_RE = re.compile(r"^(\*\*|__)[^*_]{1,40}?(:(\*\*|__)|(\*\*|__):)\s*")
+_CODE_RE = re.compile(r"`[^`]*`")
+_BARE_URL_RE = re.compile(r"https?://\S+")
+_GRADE_HEADING_RE = re.compile(r"#{1,6}\s")
+_CHECKBOX_RE = re.compile(r"[-*+]\s+\[[ xX]\]")
+
+
+def _mask_code(line):
+    return _edit(line, _code_spans(line), _hide) if "`" in line else line
+
+
+def _outside_code(lines):
+    fence = None
+    comment = False
+    for no, line in enumerate(lines, 1):
+        if fence:
+            if _fence_close(line, *fence):
+                fence = None
+            continue
+        if comment:
+            end = line.find("-->")
+            if end == -1:
+                continue
+            comment = False
+            line = line[end + 3:]
+        fo = _fence_open(line)
+        if fo:
+            fence = fo
+            continue
+        if "<!--" in line:
+            line, comment = _comments(line)
+        yield no, line
+
+
+def _first_nonblank(lines):
+    for i, line in enumerate(lines):
+        if line.strip():
+            return i
+    return None
+
+
+def _last_nonblank(lines):
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].strip():
+            return i
+    return None
+
+
+def _fold_lines(outside):
+    folds = set()
+    depth = 0
+    for no, line in outside:
+        low = line.lower()
+        if "<details" in low:
+            depth += 1
+        if depth:
+            folds.add(no)
+        if "</details>" in low:
+            depth = max(0, depth - 1)
+    return folds
+
+
+def _rule_prefix(lines, prefix):
+    if not prefix:
+        return []
+    i = _first_nonblank(lines)
+    if i is None or lines[i].lstrip().startswith(prefix):
+        return []
+    return [Problem(i + 1, "", "prefix", f"the first line must start with {prefix}")]
+
+
+def _rule_tldr(lines, outside, sentences, p):
+    limit = p.get("tldr_words")
+    cap = p.get("tldr_max_sentences")
+    prefix = p.get("first_line_prefix")
+    i = _first_nonblank(lines)
+    if i is None:
+        return []
+    no = i + 1
+    first = lines[i].lstrip()
+    if prefix and first.startswith(prefix):
+        first = first[len(prefix):]
+    if first.startswith("**TL;DR:**"):
+        end = i
+        while end < len(lines) and lines[end].strip():
+            end += 1
+        if cap is None:
+            return []
+        count = sum(1 for s in sentences if no <= s.line <= end)
+        if count > cap:
+            return [Problem(no, "", "tldr", f"the TL;DR has {count} sentences and must have {cap} or fewer")]
+        return []
+    if limit is None:
+        return []
+    folds = _fold_lines(outside)
+    visible = sum(_count(s.text)[0] for s in sentences if s.line not in folds)
+    if visible >= limit:
+        return [Problem(no, "", "tldr", f"a post of {limit} words or more needs a **TL;DR:** line first")]
+    return []
+
+
+def _rule_footer(lines, footer):
+    if not footer:
+        return []
+    i = _last_nonblank(lines)
+    if i is None or re.search(footer, lines[i]):
+        return []
+    return [Problem(i + 1, "", "footer", "the last line should be the footer")]
+
+
+def _rule_banned(sentences, phrases):
+    out = []
+    for s in sentences:
+        low = _edit(s.text, _code_spans(s.text), _hide).lower()
+        for phrase in phrases:
+            p = phrase.lower()
+            if not p:
+                continue
+            idx = low.find(p)
+            while idx != -1:
+                end = idx + len(p)
+                if (idx == 0 or not low[idx - 1].isalnum()) and (end >= len(low) or not low[end].isalnum()):
+                    out.append(Problem(s.line, s.id, "banned", f"found {phrase}, which is banned"))
+                    break
+                idx = low.find(p, idx + 1)
+    return out
+
+
+def _rule_private(lines, phrases):
+    out = []
+    for no, line in enumerate(lines, 1):
+        low = line.lower()
+        for phrase in phrases:
+            p = phrase.lower()
+            if p and p in low:
+                out.append(Problem(no, "", "private", f"found {phrase}, which is private text and must not reach a post"))
+    return out
+
+
+def _rule_code_spans(outside):
+    out = []
+    for no, line in outside:
+        if "`" not in line:
+            continue
+        for a, b in _code_spans(line):
+            s = line[a:b]
+            k = len(s) - len(s.lstrip("`"))
+            content = s[k:len(s) - k].strip()
+            if "http://" in content or "https://" in content:
+                out.append(Problem(no, "", "url-in-code", "a URL belongs outside backticks so it becomes a link"))
+            if _SHA_RE.fullmatch(content) and any(c.isdigit() for c in content) and any(c.isalpha() for c in content):
+                out.append(Problem(no, "", "sha", f"{content} is a commit sha in backticks; write it bare, because GitHub only links a bare sha"))
+    return out
+
+
+def _rule_mentions(outside):
+    out = []
+    for no, line in outside:
+        if "@" not in line:
+            continue
+        for m in _MENTION.finditer(_mask_code(line)):
+            handle = m.group(0)[m.group(0).index("@"):]
+            out.append(Problem(no, "", "mention", f"{handle} is an @ mention, which pings that person"))
+    return out
+
+
+def _rule_spdx(outside):
+    out = []
+    for no, line in outside:
+        if "GPL" not in line and "Apache" not in line and "BSD" not in line:
+            continue
+        masked = _mask_code(line)
+        for pat in _SPDX_PATTERNS:
+            for m in pat.finditer(masked):
+                out.append(Problem(no, "", "spdx", f"{m.group(0)} is an informal licence name; use the SPDX licence id, for example GPL-2.0-only"))
+    return out
+
+
+def _rule_details(lines, outside):
+    out = []
+    for no, line in outside:
+        if "</" not in line:
+            continue
+        low = _mask_code(line).lower()
+        if "</summary>" in low and no < len(lines) and lines[no].strip():
+            out.append(Problem(no, "", "details-blank", "a blank line is needed after </summary> or the text inside will not display"))
+        if "</details>" in low and no > 1 and lines[no - 2].strip():
+            out.append(Problem(no, "", "details-blank", "a blank line is needed before </details> or the text inside will not display"))
+    return out
+
+
+def _rule_grade(lines, sentences, exempt):
+    out = []
+    skipped = {}
+    for s in sentences:
+        skip = skipped.get(s.line)
+        if skip is None:
+            src = lines[s.line - 1].strip()
+            skip = skipped[s.line] = src in exempt or bool(_GRADE_HEADING_RE.match(src) or _CHECKBOX_RE.match(src))
+        if skip:
+            continue
+        cleaned = _LABEL_RE.sub("", s.text)
+        cleaned = _CODE_RE.sub("code", cleaned)
+        cleaned = _unlink(cleaned)
+        cleaned = _BARE_URL_RE.sub("link", cleaned)
+        cleaned = cleaned.replace("*", "").replace("~~", "")
+        if len(cleaned.split()) < 3:
+            continue
+        grade = ari(cleaned)
+        if grade >= 10:
+            out.append(Problem(s.line, s.id, "grade", f"the reading grade is {round(grade)}, which is too hard; every sentence should be under grade 10"))
+    return out
+
+
+def check(text, profile=None, post=False, exempt=frozenset()):
+    p = profile or {}
+    lines = text.replace("\r\n", "\n").split("\n")
+    footer = p.get("footer")
+    outside = list(_outside_code(lines))
+    need = post or p.get("tldr") == "required" or bool(p.get("banned"))
+    sentences = read_prose(text, footer) if need else []
+    problems = []
+    problems += _rule_prefix(lines, p.get("first_line_prefix"))
+    if p.get("tldr") == "required":
+        problems += _rule_tldr(lines, outside, sentences, p)
+    problems += _rule_footer(lines, footer)
+    problems += _rule_banned(sentences, p.get("banned") or [])
+    problems += _rule_private(lines, p.get("private") or [])
+    problems += _rule_code_spans(outside)
+    problems += _rule_mentions(outside)
+    problems += _rule_spdx(outside)
+    problems += _rule_details(lines, outside)
+    if post:
+        problems += _rule_grade(lines, sentences, exempt)
+    problems.sort(key=lambda q: q.line)
+    return problems
+
+
+def _read_text(path):
+    try:
+        with open(path, "rb") as f:
+            return f.read().decode("utf-8", errors="replace")
+    except OSError as e:
+        raise ConfigError(f"cannot read {path}: {e.strerror or e}") from None
+
+
+def _template_lines(profile):
+    lines = set()
+    for key in ("pr_template", "issue_template"):
+        path = profile.get(key) if profile else None
+        if path:
+            lines.update(l.strip() for l in _read_text(path).splitlines() if l.strip())
+    return frozenset(lines)
+
+
+def _run_check(args):
+    try:
+        path = find_config(os.environ)
+        config = load_config(path) if path else None
+        profile = pick_profile(config, args.repo)
+        exempt = _template_lines(profile)
+        text = _read_text(args.draft)
+    except ConfigError as e:
+        print(f"furbish: {e}", file=sys.stderr)
+        return 2
+    problems = check(text, profile, args.post, exempt)
+    for p in problems:
+        sid = f"{p.sid}: " if p.sid else ""
+        print(f"{args.draft}:{p.line}: {sid}{p.message}")
+    return 1 if problems else 0
 
 
 def main():
     argv = sys.argv[1:]
     ap = argparse.ArgumentParser(prog="furbish", description="Checks and tidies GitHub PR and issue drafts before they're posted: plain words, house rules, safe fixes. Script-first and offline.", epilog=PLANNED, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--version", action="version", version=f"furbish {__version__}")
+    sub = ap.add_subparsers(dest="command", metavar="command")
+    ck = sub.add_parser("check", help="print only the problems in a draft, with line and sentence id", description="Prints only the problems in a draft, one per line as path:line: message, and nothing at all when the draft passes. Exits 0 when it passes, 1 when it finds problems and 2 when it cannot run.")
+    ck.add_argument("draft", help="the draft file to check")
+    ck.add_argument("--repo", metavar="OWNER/NAME", help="the repo profile from the config file to use; without it, default_repo is used")
+    ck.add_argument("--post", action="store_true", help="also grade the reading level, as you would just before a post goes up")
     if not argv:
         ap.print_help(sys.stderr)
         return 2
-    ap.parse_args(argv)
+    args = ap.parse_args(argv)
+    if args.command == "check":
+        return _run_check(args)
     return 0
 
 

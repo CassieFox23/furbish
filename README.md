@@ -3,11 +3,11 @@
 Checks and tidies GitHub PR and issue drafts before they're posted: plain words, house rules, safe fixes. Script-first and offline.
 
 > [!IMPORTANT]
-> **Status: early, being built.** Only `--help` and `--version` work today. Everything marked planned below doesn't run yet.
+> **Status: early, being built.** `check`, `--help` and `--version` work today. Everything marked planned below doesn't run yet.
 
-## What it will do
+## What it does
 
-- `furbish check DRAFT` (planned): prints only the problems, with the line and sentence id (like S12). Silent on a pass. Exit 0 pass, 1 fail, 2 usage error. Reading-grade checks run only with `--post`.
+- `furbish check DRAFT [--repo owner/name] [--post]`: prints only the problems, with the line and sentence id (like S12). Silent on a pass. Exit 0 pass, 1 problems found, 2 could not run. Reading-grade checks run only with `--post`. It needs no config, but the footer, TL;DR, banned phrases, private text and first-line rules come from [your config](CONFIG.md).
 - `furbish fix DRAFT [--write]` (planned): safe mechanical edits, shown as a diff unless `--write`. Never touches code, quotes, tables or the footer.
 - `furbish set DRAFT S12 "text"` (planned): replaces one sentence by its id.
 - `furbish split DRAFT` (planned): suggests where to split long sentences.
@@ -30,15 +30,18 @@ cd furbish
 
 ## Use
 
-Only `--help` and `--version` work today:
+`check` reads a draft file and prints one line per problem. It prints nothing when the draft passes:
 
 ```bash
-python3 furbish.py --version
+python3 furbish.py check draft.md
 ```
 
 ```
-furbish 0.1.0.dev0
+draft.md:3: @someone is an @ mention, which pings that person
+draft.md:5: c1217e711 is a commit sha in backticks; write it bare, because GitHub only links a bare sha
 ```
+
+Add `--post` just before a post goes up to grade the reading level too, and `--repo owner/name` to pick a profile from your [config](CONFIG.md). `--help` and `--version` work too.
 
 ## Help
 

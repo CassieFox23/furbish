@@ -8,7 +8,7 @@ The whole program is one file, `furbish.py`. It uses the Python standard library
 
 | Part | Holds |
 |---|---|
-| `furbish.py` | the command line (today the argument parser, `--help` and `--version`), the prose reader (`read_prose`, `ari`) and the config loader (`find_config`, `load_config`, `pick_profile`) |
+| `furbish.py` | the command line (today `check`, `--help` and `--version`), the prose reader (`read_prose`, `ari`) and the config loader (`find_config`, `load_config`, `pick_profile`) |
 | `tests/` | offline unit tests, on made-up drafts only; the drafts are in `tests/drafts/` |
 | `data/` (planned) | word lists borrowed from proselint (BSD-3-Clause), write-good (MIT) and AI-tell phrase lists (MIT), each kept beside its upstream licence, with a NOTICE file |
 
@@ -18,7 +18,7 @@ The whole program is one file, `furbish.py`. It uses the Python standard library
 2. **Drafts are hostile.** A draft is untrusted text. furbish never runs, fetches or opens anything a draft names. It runs only the commands the user's own config names.
 3. **Never the network.** furbish reads the draft, the config and its own `data/`. It writes only with `--write`, and it never sends anything.
 4. **Standard library only.** Python 3.11 or newer, for tomllib. The only outside programs are the optional ones a user's config names (hunspell, vale, harper-cli).
-5. **Speed.** Word lists are set or dict lookups, never one giant alternation regex. A 262 KB draft, GitHub's comment ceiling, must check in under 1 second (the timing test is planned).
+5. **Speed.** Word lists are set or dict lookups, never one giant alternation regex. A 262 KB draft, GitHub's comment ceiling, must check in under 1 second (`check` has its timing test; each new command gets one).
 6. **Synthetic fixtures only.** Test drafts are made up. Never a real person's post, and never a copy of one.
 7. **No personal details.** No personal paths, usernames, hostnames or email addresses anywhere in the tree or in the text of a commit message. The one exception is the commit author address, which carries the machine name; clear it from history before the repo ever goes public.
 8. **Style.** Match the file: no comments, no docstrings. The why of a change goes in the commit message.

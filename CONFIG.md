@@ -1,6 +1,6 @@
 # Configuring furbish
 
-furbish reads and checks this file, but no command uses it yet; `check` will. The key names may still change. A mistake in the file, such as a misspelt key or a regex that doesn't compile, is reported with the file's path and the key at fault, and nothing runs until it's fixed.
+`furbish check` reads and checks this file. The key names may still change. A mistake in the file, such as a misspelt key or a regex that doesn't compile, is reported with the file's path and the key at fault, and nothing runs until it's fixed.
 
 furbish looks for the file in this order: `$FURBISH_CONFIG`, then `$XDG_CONFIG_HOME/furbish/config.toml`, then `~/.config/furbish/config.toml`.
 
