@@ -40,7 +40,7 @@ command = ["example-json-checker"]
 
 What each part is for:
 
-- `pr_template` and `issue_template` hold the repo's templates. Their lines are exempt from grading. A leading `~` means your home folder.
+- `pr_template` and `issue_template` hold the repo's templates. Their lines are exempt from grading. A leading `~` means your home folder. A repo that uses GitHub issue forms (YAML files) needs no `issue_template`: the field labels and checkboxes a form produces appear in a posted issue as `###` headings and `- [x]` items, which are already exempt.
 - `first_line_prefix` is the text a post must start with, for repos that want posts to open a set way.
 - `footer` is a regex for the footer line. `fix` never touches it.
 - `tldr` is `"required"` or `"off"` (the default). `tldr_words` is the length in words from which a post needs a TL;DR, and `tldr_max_sentences` caps it. Both are whole numbers of at least 1, and both must be set when `tldr` is `"required"`.
