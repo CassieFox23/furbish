@@ -11,7 +11,7 @@ furbish has no network, no telemetry and no logs. It reads what you give it and 
 
 ## What it writes
 
-- only the draft, and only with `--write`. To keep a half-written draft from ever replacing the real one, it writes the new text to a short-lived temporary file in the draft's own folder, then renames that file over the draft. A draft that is a link is changed where the link points
+- only the draft, and only with `--write`. To keep a half-written draft from ever replacing the real one, it writes the new text to a short-lived temporary file in the draft's own folder, then renames that file over the draft. A draft that is a symlink is changed where the link points, and a read-only draft or a hard-linked one is refused
 - nothing else: no cache, no log file, no record of the drafts it checked
 
 ## Turning it down

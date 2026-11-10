@@ -1583,6 +1583,12 @@ class TestSetReviewFixes(unittest.TestCase):
             self.assertFalse(furbish._negated(t), t)
         self.assertTrue(furbish._negated("We log ~~not~~ it."))
 
+    def test_an_image_or_a_tag_that_never_closes_is_not_a_negation_source(self):
+        self.assertFalse(furbish._negated("It ran ![not](x.png) here."))
+        self.assertTrue(furbish._negated("It ran ![a not here."))
+        self.assertTrue(furbish._negated("It ran ![a](b not here."))
+        self.assertTrue(furbish._negated("It <a 'x not here."))
+
     def test_nobody_s_counts_as_keeping_nobody(self):
         d = "## Security\n\nNobody logs this.\n"
         self.assertEqual(self.put(d, "S2", "Nobody's logging this.", self.KN), "## Security\n\nNobody's logging this.\n")
@@ -1735,6 +1741,17 @@ class TestSetTiming(ConfigCase):
         t = time.perf_counter()
         furbish.set_sentence(big + "\n", "S1", "x " + big)
         self.assertLess(time.perf_counter() - t, 2.0)
+
+    def test_hostile_floods_through_the_negation_guard(self):
+        profile = {"keep_negation": ["Not run"]}
+        for body in ("![a" * 65000, "![a](" * 52000, "<a '" * 65000, '<a "' * 65000, "<a x='" * 43000, "<a " * 80000, "<b2 " * 65000, "<" * 200000, "don't " * 40000, "a'" * 130000, "![a](b) " * 30000):
+            d = "## Not run\n\nIt was not run. " + body + "\n"
+            t = time.perf_counter()
+            try:
+                furbish.set_sentence(d, "S3", "No.", profile)
+            except (furbish.Refused, furbish.ConfigError):
+                pass
+            self.assertLess(time.perf_counter() - t, 2.0, body[:12])
 
     def test_hostile_lines(self):
         for d in ("a" + "`" * 200000, "[a" * 100000, "[a](" * 60000, "<a " * 80000, "`a b " * 40000, "- a b c.\n" * 30000, "> a b c.\n" * 30000):
