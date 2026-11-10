@@ -1,4 +1,4 @@
-import importlib.util, json, os, re, subprocess, sys, tempfile, time, unittest
+import importlib.util, json, os, re, shlex, subprocess, sys, tempfile, time, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(HERE, "..", "furbish.py")
@@ -1532,6 +1532,169 @@ class TestSetCli(ConfigCase):
         r = self.run_set("draft.md", "S2", "Deux.", "--write", cwd=self.tmp)
         self.assertEqual(r.returncode, 0)
         self.assertEqual(self.read(os.path.join(self.tmp, "draft.md")), b"One here. Deux.\n")
+
+
+class TestSetReviewFixes(unittest.TestCase):
+    KN = {"keep_negation": ["Security"]}
+
+    def put(self, text, sid, new, profile=None):
+        return furbish.set_sentence(text, sid, new, profile).text
+
+    def refuse(self, text, sid, new, profile=None):
+        with self.assertRaises(furbish.Refused, msg=(text, new)) as cm:
+            furbish.set_sentence(text, sid, new, profile)
+        return str(cm.exception)
+
+    def test_a_replacement_cannot_change_what_kind_of_block_the_next_lines_are(self):
+        d = "Intro here.\nSecond line.\n\nTail para.\n"
+        for new in ("> Quote one. Two.", "- Item one. Two.", "1. Item one. Two.", "# Head one. Two.", "> Quote one"):
+            self.refuse(d, "S1", new)
+
+    def test_a_heading_scope_cannot_be_ended_in_two_steps(self):
+        d = "## Security\n\nIntro here.\n\nWe do not log.\n"
+        self.refuse(d, "S3", "We log everything.", self.KN)
+        self.refuse(d, "S2", "# Top. Fine here.", self.KN)
+
+    def test_a_comment_cannot_be_written_into_a_draft(self):
+        for new in ("Hi there. <!-- hidden --> Two.", "Hi <!--", "Hi -->", "<!---->", "A <!-- x --> B."):
+            self.assertIn("comment", self.refuse("Intro here.\n", "S1", new))
+
+    def test_hidden_and_odd_characters_are_not_accepted(self):
+        for new in ("A\tB.", "A\u200bB.", "A\u2060B.", "A\ufeffB.", "A\U000e0041B."):
+            self.refuse("Alpha beta.\n", "S1", new)
+
+    def test_a_trailing_symbol_that_is_not_a_sentence_is_fine(self):
+        self.assertEqual(self.put("Alpha beta.\n", "S1", "Done. \U0001F642"), "Done. \U0001F642\n")
+        self.assertEqual(self.put("Alpha beta.\n", "S1", "Done \u2014"), "Done \u2014\n")
+
+    def test_the_same_text_on_a_wrapped_sentence_still_joins_the_lines(self):
+        self.assertEqual(self.put("Alpha beta\ngamma.\n", "S1", "Alpha beta gamma."), "Alpha beta gamma.\n")
+
+    def test_a_bare_carriage_return_at_the_very_end_does_not_move_the_ids(self):
+        d = "Alpha one.\n\nSent with furbish\r"
+        p = {"footer": r"furbish$"}
+        self.assertEqual([s.id for s in furbish.read_prose(d, p["footer"])], ["S1", "S2"])
+        self.assertEqual(self.put(d, "S2", "Edited.", p), "Alpha one.\n\nEdited.\r")
+
+    def test_negation_words_with_apostrophes_and_hidden_ones(self):
+        for t in ("Nothing's logged here.", "Nobody's logging this.", "It don\u02bct run.", "It isn\u2019t run."):
+            self.assertTrue(furbish._negated(t), t)
+        for t in ("We log <b title='x > not'>it</b>.", "We log it ![not](x.png).", "We log <i>it</i>."):
+            self.assertFalse(furbish._negated(t), t)
+        self.assertTrue(furbish._negated("We log ~~not~~ it."))
+
+    def test_nobody_s_counts_as_keeping_nobody(self):
+        d = "## Security\n\nNobody logs this.\n"
+        self.assertEqual(self.put(d, "S2", "Nobody's logging this.", self.KN), "## Security\n\nNobody's logging this.\n")
+        self.refuse("## Security\n\nNothing's logged here.\n", "S2", "We log it.", self.KN)
+
+    def test_every_way_of_writing_a_heading_guards_what_is_under_it(self):
+        for h in ("## Security", "   ## Security", "Security\n========", "Security\n--------", "\ufeff## Security", "## _Security_", "## __Security__", "## **Security**", "## Security ##"):
+            d = h + "\n\nWe do not log.\n"
+            n = len(furbish.read_prose(d))
+            self.refuse(d, f"S{n}", "We log.", self.KN)
+
+    def test_a_quoted_heading_does_not_guard_what_follows_the_quote(self):
+        d = "> ## Security\n\nWe do not log.\n"
+        self.assertIn("We log.", self.put(d, "S2", "We log.", self.KN))
+
+    def test_a_sibling_heading_can_be_reworded_and_ends_the_scope_before_it(self):
+        d = "## Security\n\nAll fine.\n\n## No limits\n\nBody here.\n"
+        self.assertIn("## Limits", self.put(d, "S3", "Limits", self.KN))
+        self.assertIn("We know.", self.put("## Security\n\nAll fine.\n\n## No limits\n\nWe do not know.\n", "S4", "We know.", self.KN))
+
+    def test_a_heading_with_no_words_still_ends_a_scope(self):
+        d = "## Security\n\nAll fine.\n\n## `Details`\n\nWe do not know.\n"
+        self.assertIn("We know.", self.put(d, "S3", "We know.", self.KN))
+        d = "## Security\n\nAll fine.\n\n## \U0001F600\n\nWe do not know.\n"
+        self.assertIn("We know.", self.put(d, "S3", "We know.", self.KN))
+
+    def test_a_repeated_word_in_a_heading_is_changed_where_it_is(self):
+        d = "## Security. Security\n\nWe do not log.\n"
+        self.assertIn("## Security. Memo", self.put(d, "S2", "Memo", self.KN))
+        self.refuse(d, "S1", "Memo.", self.KN)
+
+    def test_tag_names_are_not_numbers(self):
+        self.assertEqual(furbish._lost("<h2>Security</h2> now.", "Security now."), [])
+        self.assertEqual(furbish._lost("A <b>bold 12</b> move.", "A bold move."), ["the new sentence drops the number 12"])
+        self.assertEqual(furbish._lost("It is a<b2.", "It is."), ["the new sentence drops the number 2"])
+
+    def test_upper_case_shas_are_shas(self):
+        self.refuse("Fixed in ABCDEF1234 today.\n", "S1", "Fixed in 1234 today.")
+        self.refuse("Fixed in abcdef1234 today.\n", "S1", "Fixed in ABCDEF1234 today.")
+        self.assertEqual(self.put("Fixed in ABCDEF1234 today.\n", "S1", "Today, ABCDEF1234."), "Today, ABCDEF1234.\n")
+
+    def test_marks_in_front_of_a_sentence_survive(self):
+        self.assertEqual(self.put("Foo here.\n---\nBar here.\n", "S2", "Baz here."), "Foo here.\n---\nBaz here.\n")
+        self.assertEqual(self.put("Foo here.\n***\nBar here.\n", "S2", "Baz here."), "Foo here.\n***\nBaz here.\n")
+        self.assertEqual(self.put("- [ ] Task one.\n- [x] Task two.\n", "S1", "Task uno."), "- [ ] Task uno.\n- [x] Task two.\n")
+        self.assertEqual(self.put("> - item one\n> continues here.\n", "S1", "New."), "> - New.\n")
+        self.assertEqual(self.put("-\tTabbed item.\n", "S1", "New."), "-\tNew.\n")
+        self.assertEqual(self.put("- Alpha one\n-\n- beta two.\n", "S1", "New."), "- New.\n-\n- beta two.\n")
+        self.assertEqual(self.put("Foo here\n---\n\nBar here.\n", "S1", "Baz here"), "Baz here\n---\n\nBar here.\n")
+
+    def test_a_sentence_that_runs_over_marked_lines_is_refused(self):
+        for d in ("> Alpha one\n>\n> beta two.\n", "> - a b\n> - c d.\n"):
+            self.assertIn("comment or with list marks", self.refuse(d, "S1", "New."))
+
+    def test_the_reader_leaves_marks_out_of_the_prose(self):
+        self.assertEqual(texts("Foo here.\n---\nBar here.\n"), ["Foo here.", "Bar here."])
+        self.assertEqual(texts("A line.\n\n***\n\n___\n\n- - -\n\nAnother.\n"), ["A line.", "Another."])
+        self.assertEqual(texts("- [ ] Task one.\n- [X] Task two.\n"), ["Task one.", "Task two."])
+        self.assertEqual(texts("-\tTabbed item.\n"), ["Tabbed item."])
+        self.assertEqual(texts("> - item one\n> continues here.\n"), ["item one continues here."])
+        self.assertEqual(texts("- Alpha one\n-\n- beta two.\n"), ["Alpha one", "beta two."])
+        self.assertEqual(texts("See [x] here.\n\n[x]: https://example.com/a\n"), ["See [x] here."])
+        self.assertEqual(texts("A note[^1].\n\n[^1]: The note text.\n"), ["A note[^1].", "[^1]: The note text."])
+        self.assertEqual(texts("See [x] here.\n[x]: not a definition here.\n"), ["See [x] here.", "[x]: not a definition here."])
+
+    def test_the_reader_knows_more_kinds_of_heading(self):
+        for d in ("  ## Hi there", "   # Hi there", "\ufeff## Hi there", "Hi there\n===", "Hi there\n---"):
+            found = furbish._sentences(d.split("\n"), None)
+            self.assertEqual([(x.sentence.text, x.kind) for x in found], [("Hi there", "heading")], d)
+        self.assertEqual(furbish._sentences("    ## Hi there".split("\n"), None)[0].kind, "para")
+        self.assertEqual(furbish._sentences(["Hi there", "", "---"], None)[0].kind, "para")
+
+    def test_each_sentence_knows_the_headings_over_it(self):
+        found = furbish._sentences("# One\n\n## Two\n\nBody.\n\n## Three\n\nMore.\n".split("\n"), None)
+        self.assertEqual([x.under for x in found], [(), ("One",), ("One", "Two"), ("One",), ("One", "Three")])
+
+
+class TestSetWritePath(ConfigCase):
+    def run_set(self, *args):
+        return subprocess.run([sys.executable, "-I", SCRIPT, "set", *args], capture_output=True, text=True, env={"HOME": self.tmp, "PATH": "/usr/bin:/bin"})
+
+    def test_a_closed_pipe_does_not_make_a_traceback_or_lose_the_write(self):
+        path = self.write("One here. Two here.\n", "a.md")
+        cmd = f"set -o pipefail; {shlex.quote(sys.executable)} -I {shlex.quote(SCRIPT)} set {shlex.quote(path)} S2 Deux. --write | head -c0; echo ${{PIPESTATUS[0]}}"
+        r = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, env={"HOME": self.tmp, "PATH": "/usr/bin:/bin"})
+        self.assertEqual(r.stdout.strip(), "0")
+        self.assertNotIn("Exception", r.stderr)
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "One here. Deux.\n")
+
+    @unittest.skipIf(os.geteuid() == 0, "root can write a read-only file")
+    def test_a_read_only_draft_is_left_alone(self):
+        path = self.write("One here. Two here.\n", "a.md")
+        os.chmod(path, 0o444)
+        r = self.run_set(path, "S2", "Deux.", "--write")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("read-only", r.stderr)
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "One here. Two here.\n")
+        self.assertEqual(self.run_set(path, "S2", "Deux.").returncode, 0)
+
+    def test_a_hard_linked_draft_is_left_alone(self):
+        path = self.write("One here. Two here.\n", "a.md")
+        link = os.path.join(self.tmp, "b.md")
+        os.link(path, link)
+        r = self.run_set(path, "S2", "Deux.", "--write")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("hard link", r.stderr)
+        for p in (path, link):
+            with open(p, encoding="utf-8") as f:
+                self.assertEqual(f.read(), "One here. Two here.\n")
+        self.assertEqual(sorted(os.listdir(self.tmp)), ["a.md", "b.md"])
 
 
 class TestSetTiming(ConfigCase):

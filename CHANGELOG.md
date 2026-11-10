@@ -16,3 +16,4 @@ Format after [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - The prose reader is faster on drafts of many short lines: about 40% on a 260 KB draft of one-word lines, measured on one machine.
+- The prose reader no longer counts horizontal rules, empty list items or link definitions as prose, reads a line underlined with `===` or `---` as a heading, accepts headings indented up to three spaces, ignores a byte order mark at the start of the file, and leaves a checkbox, a list marker inside a quote or a tab after a list marker out of the sentence. Sentence ids can shift on a draft that has link definitions, which used to be numbered.

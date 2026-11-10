@@ -9,14 +9,20 @@ PLANNED = """planned commands, not working yet:
   split DRAFT            planned: suggest where to split long sentences"""
 
 Sentence = namedtuple("Sentence", "id line text grade")
-Located = namedtuple("Located", "sentence where kind level heading")
+Located = namedtuple("Located", "sentence where kind level heading under span")
 
 _URL = re.compile(r"https?://\S*[^\s.,;:!?)\]\"']")
 _TAG = re.compile(r"<[/!A-Za-z][^<>]*>")
 _HTML_ONLY = re.compile(r"(?:<[/!A-Za-z][^<>]*>\s*)+")
-_HEADING = re.compile(r"(#{1,6})\s")
-_LIST = re.compile(r"\s*(?:[-*+]|\d+[.)]) ")
+_HEADING = re.compile(r" {0,3}(#{1,6})\s")
+_LIST = re.compile(r"\s*(?:[-*+]|\d+[.)])[ \t]")
+_EMPTY_ITEM = re.compile(r"\s*(?:[-*+]|\d+[.)])[ \t]*")
+_TASK = re.compile(r"\[[ xX]\][ \t]+")
+_THEMATIC = re.compile(r" {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*")
+_UNDERLINE = re.compile(r" {0,3}(?:=+|-+)[ \t]*")
+_REFDEF = re.compile(r" {0,3}\[(?!\^)[^\]]+\]:[ \t]*\S")
 _SPACES = re.compile(r"\s+")
+_STOPS = re.compile(r"[.!?]")
 _ABBR = {"e.g.", "i.e.", "vs.", "cf.", "mr.", "mrs.", "ms.", "dr.", "st."}
 
 
@@ -91,6 +97,10 @@ def _blocks(lines, footer):
     comment = False
     summary = False
     for no, line in enumerate(lines, 1):
+        base = 0
+        if no == 1 and line.startswith("\ufeff"):
+            line = line[1:]
+            base = 1
         if fence:
             if _fence_close(line, *fence):
                 fence = None
@@ -101,7 +111,6 @@ def _blocks(lines, footer):
                 summary = False
             cur = None
             continue
-        base = 0
         if comment:
             end = line.find("-->")
             if end == -1:
@@ -109,7 +118,7 @@ def _blocks(lines, footer):
                 continue
             comment = False
             line = line[end + 3:]
-            base = end + 3
+            base += end + 3
         if footer and re.search(footer, line):
             cur = None
             continue
@@ -131,20 +140,35 @@ def _blocks(lines, footer):
         if not stripped or stripped[0] == "|" or _HTML_ONLY.fullmatch(stripped):
             cur = None
             continue
+        c0 = stripped[0]
+        if c0 in "=-" and cur is not None and cur[0] == "para" and _UNDERLINE.fullmatch(line):
+            cur[0] = "heading"
+            cur[2] = 1 if c0 == "=" else 2
+            cur = None
+            continue
+        if (c0 in "-*_" and _THEMATIC.fullmatch(line)) or (c0 in "-*+0123456789" and _EMPTY_ITEM.fullmatch(line)) or (c0 == "[" and cur is None and _REFDEF.match(line)):
+            cur = None
+            continue
         hm = _HEADING.match(line)
         if hm:
-            t = line[len(hm.group(1)):].strip()
+            t = line[hm.end(1):].strip()
             blocks.append(["heading", [(no, t, None if shift is None else shift + end_col - len(t))], len(hm.group(1))])
             cur = None
             continue
         lm = _LIST.match(line)
         if lm:
             t = line[lm.end():].strip()
+            tm = _TASK.match(t)
+            if tm:
+                t = t[tm.end():]
             cur = ["list", [(no, t, None if shift is None else shift + end_col - len(t))], 0]
             blocks.append(cur)
             continue
         if stripped[0] == ">":
             t = stripped.lstrip("> \t")
+            qm = _LIST.match(t)
+            if qm:
+                t = t[qm.end():].strip()
             part = (no, t, None if shift is None else shift + end_col - len(t))
             if cur and cur[0] == "quote":
                 cur[1].append(part)
@@ -217,9 +241,8 @@ def _split(text, masked):
     spans = []
     start = 0
     n = len(masked)
-    for i, ch in enumerate(masked):
-        if ch not in ".!?":
-            continue
+    for m in _STOPS.finditer(masked):
+        i = m.start()
         j = i + 1
         while j < n and masked[j] in "\"')]":
             j += 1
@@ -281,9 +304,9 @@ def _prose(text):
 
 def _sentences(lines, footer):
     out = []
+    stack = []
     for kind, parts, level in _blocks(lines, footer):
         joined = ""
-        owners = []
         starts = []
         nos = []
         cols = []
@@ -293,13 +316,17 @@ def _sentences(lines, footer):
                 continue
             if joined:
                 joined += " "
-                owners.append(no)
             starts.append(len(joined))
             nos.append(no)
             cols.append(col)
             unsafe.append(unsafe[-1] + (col is None))
             joined += content
-            owners.extend([no] * len(content))
+        if kind == "heading":
+            while stack and stack[-1][0] >= level:
+                stack.pop()
+        under = tuple(text for _, text in stack)
+        if kind == "heading":
+            stack.append((level, joined))
         masked = _mask(joined)
         for a, b in _split(joined, masked):
             seg = joined[a:b]
@@ -317,8 +344,12 @@ def _sentences(lines, footer):
             where = None
             if unsafe[j + 1] == unsafe[i]:
                 where = ((nos[i], cols[i] + sa - starts[i]), (nos[j], cols[j] + sb - starts[j]))
-            out.append((s, owners[sa], _grade(words, chars), where, kind, level, joined if kind == "heading" else None))
-    return [Located(Sentence(f"S{i}", line, s, g), where, kind, level, head) for i, (s, line, g, where, kind, level, head) in enumerate(out, 1)]
+                for k in range(i + 1, j + 1):
+                    if nos[k] != nos[k - 1] + 1 or lines[nos[k] - 1][:cols[k]].strip(" \t>"):
+                        where = None
+                        break
+            out.append((s, nos[i], _grade(words, chars), where, kind, level, joined if kind == "heading" else None, under, (sa, sb)))
+    return [Located(Sentence(f"S{i}", line, s, g), where, kind, level, head, under, span) for i, (s, line, g, where, kind, level, head, under, span) in enumerate(out, 1)]
 
 
 def read_prose(text, footer=None):
@@ -938,9 +969,15 @@ def run_external(entries, draft_path, timeout=EXTERNAL_TIMEOUT):
 
 
 _ID = re.compile(r"[Ss]([0-9]{1,9})")
-_SHA_TOKEN = re.compile(r"(?<![0-9A-Za-z])[0-9a-f]{7,40}(?![0-9A-Za-z])")
+_SHA_TOKEN = re.compile(r"(?<![0-9A-Za-z])[0-9a-fA-F]{7,40}(?![0-9A-Za-z])")
 _NUMBER = re.compile(r"\d+(?:[.,:/]\d+)*")
-_WORD = re.compile(r"[a-z]+(?:['\u2019][a-z]+)*")
+_TAG_NAME = re.compile(r"(?<=<)/?[A-Za-z][A-Za-z0-9]*(?=[\s>/])")
+_WORD = re.compile(r"[a-z]+(?:['\u2019\u02bc][a-z]+)*")
+_APOSTROPHE = re.compile(r"['\u2019\u02bc]")
+_NT = re.compile(r"n['\u2019\u02bc]t$")
+_QUOTED_TAG = re.compile(r"<[/!A-Za-z](?:[^<>\"']|\"[^\"]*\"|'[^']*')*>")
+_IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+_HIDDEN = re.compile("[\t\u200b\u2060\ufeff\U000e0000-\U000e007f]")
 _NEGATIONS = frozenset(("not", "no", "never", "none", "nothing", "nobody", "nowhere", "neither", "nor", "cannot", "without"))
 Edit = namedtuple("Edit", "text first old new")
 
@@ -954,8 +991,9 @@ class Refused(Exception):
 
 
 def _negated(text):
+    text = _QUOTED_TAG.sub("", _IMAGE.sub("", text))
     for w in _WORD.findall(_prose(text).lower()):
-        if w in _NEGATIONS or w.endswith("n't") or w.endswith("n\u2019t"):
+        if _APOSTROPHE.split(w)[0] in _NEGATIONS or _NT.search(w):
             return True
     return False
 
@@ -971,8 +1009,8 @@ def _lost(old, new):
     for span in dict.fromkeys(old[a:b] for a, b in spans):
         if span not in kept:
             out.append(f"the new sentence drops the inline code {span}")
-    old = _edit(old, spans, lambda t: " ")
-    new = _edit(new, _code_spans(new), lambda t: " ")
+    old = _TAG_NAME.sub(" ", _edit(old, spans, lambda t: " "))
+    new = _TAG_NAME.sub(" ", _edit(new, _code_spans(new), lambda t: " "))
     spans = _sha_spans(old)
     kept = {new[a:b] for a, b in _sha_spans(new)}
     for sha in dict.fromkeys(old[a:b] for a, b in spans):
@@ -988,7 +1026,7 @@ def _lost(old, new):
 
 
 def _listed(heading, entries):
-    h = _prose(heading).strip().lower()
+    h = _prose(heading).strip("_ \t").lower()
     for entry in entries:
         e = entry.strip().lower()
         if e and (h == e or h.startswith(e) and not h[len(e)].isalnum()):
@@ -996,35 +1034,26 @@ def _listed(heading, entries):
     return None
 
 
-def _headings_over(located, n):
-    stack = []
-    for x in located[:n]:
-        if x.kind == "heading":
-            while stack and stack[-1][0] >= x.level:
-                stack.pop()
-            stack.append((x.level, x.heading))
-    return stack
-
-
-def _guards(located, n, old, new, entries):
-    x = located[n - 1]
+def _guards(x, old, new, entries):
     out = _lost(old, new)
     if not entries:
         return out
     if x.kind == "heading":
         hit = _listed(x.heading, entries)
-        if hit and not _listed(x.heading.replace(old, new, 1), entries):
+        sa, sb = x.span
+        if hit and not _listed(x.heading[:sa] + new + x.heading[sb:], entries):
             out.append(f'"{hit}" is a heading on the keep_negation list; keep it, or the guard stops working')
-        stack = [h for h in _headings_over(located, n - 1) if h[1] is not x.heading]
-    else:
-        stack = _headings_over(located, n)
     if _negated(old) and not _negated(new):
-        for _, text in stack:
+        for text in x.under:
             hit = _listed(text, entries)
             if hit:
                 out.append(f'it sits under "{hit}" and says no there, so the new sentence must say no too (with not, never, no, without and so on)')
                 break
     return out
+
+
+def _alnum(text):
+    return [c for c in text if c.isalnum()]
 
 
 def set_sentence(text, sid, new, profile=None):
@@ -1034,7 +1063,7 @@ def set_sentence(text, sid, new, profile=None):
     n = int(m.group(1))
     p = profile or {}
     raw = text.split("\n")
-    crs = [l.endswith("\r") for l in raw]
+    crs = [l.endswith("\r") for l in raw[:-1]] + [False]
     lines = [l[:-1] if c else l for l, c in zip(raw, crs)]
     footer = p.get("footer")
     located = _sentences(lines, footer)
@@ -1049,26 +1078,29 @@ def set_sentence(text, sid, new, profile=None):
     new = new.strip()
     if not new:
         raise Refused(["the new sentence is empty; to remove a sentence, edit the file yourself"], line, sid)
-    if _CONTROL.search(new):
-        raise Refused(["the new sentence must be one plain line, with no line breaks, control characters or text-direction marks"], line, sid)
+    if _CONTROL.search(new) or _HIDDEN.search(new):
+        raise Refused(["the new sentence must be one plain line, with no line breaks, tabs, control characters, hidden or text-direction marks"], line, sid)
+    if "<!--" in new or "-->" in new:
+        raise Refused(["the new sentence cannot hold a comment"], line, sid)
     if x.where is None:
-        raise Refused(["this sentence shares its line with a comment, and furbish would eat the comment, so change it by hand"], line, sid)
+        raise Refused(["this sentence shares its lines with a comment or with list marks that furbish would lose, so change it by hand"], line, sid)
     (l1, c1), (l2, c2) = x.where
     if l1 == l2 and lines[l1 - 1][c1:c2] != old:
         raise Refused(["furbish could not find this sentence safely, so change it by hand"], line, sid)
-    if new == old:
+    if new == old and l1 == l2:
         return Edit(text, l1, lines[l1 - 1:l2], lines[l1 - 1])
-    reasons = _guards(located, n, old, new, p.get("keep_negation") or [])
+    reasons = _guards(x, old, new, p.get("keep_negation") or [])
     if reasons:
         raise Refused(reasons, line, sid)
     merged = lines[l1 - 1][:c1] + new + lines[l2 - 1][c2:]
     out = lines[:l1 - 1] + [merged] + lines[l2:]
     ends = crs[:l1 - 1] + [crs[l2 - 1]] + crs[l2:]
-    before = [y.sentence.text for y in located]
-    after = [y.sentence.text for y in _sentences(out, footer)]
-    k = len(after) - len(before) + 1
-    if k < 1 or after[:n - 1] != before[:n - 1] or after[n - 1 + k:] != before[n:] or (k == 1 and after[n - 1] != new):
-        raise Refused(["the sentences around it would not read the same after this change; end the new text with a full stop, and do not start a code block, comment, table or heading with it"], line, sid)
+    after = _sentences(out, footer)
+    k = len(after) - len(located) + 1
+    same = lambda y: (y.sentence.text, y.kind, y.level)
+    fresh = after[n - 1:n - 1 + k]
+    if k < 1 or [same(y) for y in after[:n - 1]] != [same(y) for y in located[:n - 1]] or [same(y) for y in after[n - 1 + k:]] != [same(y) for y in located[n:]] or any((y.kind, y.level) != (x.kind, x.level) for y in fresh) or _alnum(" ".join(y.sentence.text for y in fresh)) != _alnum(new):
+        raise Refused(["the sentences around it would not read the same after this change; end the new text with a full stop, and do not start a code block, comment, table, list or heading with it"], line, sid)
     joined = "\n".join(l + "\r" if c else l for l, c in zip(out, ends))
     return Edit(joined, l1, lines[l1 - 1:l2], merged)
 
@@ -1126,12 +1158,19 @@ def _run_check(args):
 def _write_text(path, text):
     real = os.path.realpath(path)
     try:
+        info = os.stat(real)
+        if not os.access(real, os.W_OK):
+            raise ConfigError(f"{path} is read-only, so furbish will not change it")
+        if info.st_nlink > 1:
+            raise ConfigError(f"{path} has more than one name (a hard link), and replacing it would leave the other names with the old text, so furbish will not change it")
         fd, tmp = tempfile.mkstemp(dir=os.path.dirname(real), prefix=".furbish-")
     except OSError as e:
         raise ConfigError(f"cannot write {path}: {e.strerror or e}") from None
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(text.encode("utf-8"))
+            f.flush()
+            os.fsync(f.fileno())
         shutil.copymode(real, tmp)
         os.replace(tmp, real)
     except (OSError, ValueError) as e:
@@ -1199,4 +1238,10 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        code = main()
+        sys.stdout.flush()
+    except BrokenPipeError:
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        code = 0
+    sys.exit(code)

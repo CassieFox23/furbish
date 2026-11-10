@@ -58,7 +58,7 @@ python3 furbish.py set draft.md S2 "It took 12 seconds." --write
 +It took 12 seconds.
 ```
 
-A sentence that wraps over several lines becomes one line. A refusal prints one line per reason, like `draft.md:3: S2: the new sentence drops the number 12`, and writes nothing. If the new text starts with a dash, put `--` before it.
+The new text must be one plain line: no tabs, hidden characters or comments. A sentence that wraps over several lines becomes one line, and `set` refuses a sentence it can't change without losing something in front of it, such as a list marker. A refusal prints one line per reason, like `draft.md:3: S2: the new sentence drops the number 12`, and writes nothing. If the new text starts with a dash, put `--` before it.
 
 ## Help
 
