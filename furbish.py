@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-import argparse, bisect, json, os, re, subprocess, sys, tomllib
+import argparse, bisect, json, os, re, shutil, subprocess, sys, tempfile, tomllib
 from collections import namedtuple
 
 __version__ = "0.1.0.dev0"
 
 PLANNED = """planned commands, not working yet:
   fix DRAFT [--write]    planned: safe mechanical edits, shown as a diff unless --write
-  set DRAFT S12 "text"   planned: replace one sentence by its id
   split DRAFT            planned: suggest where to split long sentences"""
 
 Sentence = namedtuple("Sentence", "id line text grade")
+Located = namedtuple("Located", "sentence where kind level heading")
 
 _URL = re.compile(r"https?://\S*[^\s.,;:!?)\]\"']")
 _TAG = re.compile(r"<[/!A-Za-z][^<>]*>")
@@ -34,11 +34,14 @@ def _count(text):
     return words, chars
 
 
-def ari(text):
-    words, chars = _count(text)
+def _grade(words, chars):
     if not words:
         return 0.0
     return 4.71 * chars / words + 0.5 * words - 21.43
+
+
+def ari(text):
+    return _grade(*_count(text))
 
 
 def _fence_open(line):
@@ -64,6 +67,8 @@ def _fence_close(line, c, k):
 
 
 def _comments(line):
+    if "<!--" not in line:
+        return line, False
     masked = _edit(line, _code_spans(line), _hide)
     pieces = []
     last = 0
@@ -96,6 +101,7 @@ def _blocks(lines, footer):
                 summary = False
             cur = None
             continue
+        base = 0
         if comment:
             end = line.find("-->")
             if end == -1:
@@ -103,6 +109,7 @@ def _blocks(lines, footer):
                 continue
             comment = False
             line = line[end + 3:]
+            base = end + 3
         if footer and re.search(footer, line):
             cur = None
             continue
@@ -111,7 +118,10 @@ def _blocks(lines, footer):
             fence = fo
             cur = None
             continue
+        whole = line
         line, comment = _comments(line)
+        shift = base if line == whole else None
+        end_col = len(line.rstrip())
         hid = _edit(line, _code_spans(line), _hide).lower()
         if "<summary" in hid:
             summary = "</summary>" not in hid
@@ -123,31 +133,37 @@ def _blocks(lines, footer):
             continue
         hm = _HEADING.match(line)
         if hm:
-            blocks.append(["heading", [(no, line[len(hm.group(1)):].strip())]])
+            t = line[len(hm.group(1)):].strip()
+            blocks.append(["heading", [(no, t, None if shift is None else shift + end_col - len(t))], len(hm.group(1))])
             cur = None
             continue
         lm = _LIST.match(line)
         if lm:
-            cur = ["list", [(no, line[lm.end():].strip())]]
+            t = line[lm.end():].strip()
+            cur = ["list", [(no, t, None if shift is None else shift + end_col - len(t))], 0]
             blocks.append(cur)
             continue
         if stripped[0] == ">":
             t = stripped.lstrip("> \t")
+            part = (no, t, None if shift is None else shift + end_col - len(t))
             if cur and cur[0] == "quote":
-                cur[1].append((no, t))
+                cur[1].append(part)
             else:
-                cur = ["quote", [(no, t)]]
+                cur = ["quote", [part], 0]
                 blocks.append(cur)
             continue
+        part = (no, stripped, None if shift is None else shift + end_col - len(stripped))
         if cur:
-            cur[1].append((no, stripped))
+            cur[1].append(part)
         else:
-            cur = ["para", [(no, stripped)]]
+            cur = ["para", [part], 0]
             blocks.append(cur)
-    return [parts for _, parts in blocks]
+    return blocks
 
 
 def _code_spans(text):
+    if "`" not in text:
+        return []
     runs = [m.span() for m in re.finditer(r"`+", text)]
     by = {}
     for i, (s, e) in enumerate(runs):
@@ -226,6 +242,8 @@ def _split(text, masked):
 
 
 def _unlink(text):
+    if "](" not in text:
+        return text
     brk = [m.start() for m in re.finditer(r"[\[\]]", text)]
     pieces = []
     last = 0
@@ -249,7 +267,7 @@ def _unlink(text):
 
 
 def _strip_tags(text):
-    return _TAG.sub("", text)
+    return _TAG.sub("", text) if "<" in text else text
 
 
 def _prose(text):
@@ -261,17 +279,25 @@ def _prose(text):
     return _SPACES.sub(" ", t).strip()
 
 
-def read_prose(text, footer=None):
+def _sentences(lines, footer):
     out = []
-    for parts in _blocks(text.replace("\r\n", "\n").split("\n"), footer):
+    for kind, parts, level in _blocks(lines, footer):
         joined = ""
         owners = []
-        for no, content in parts:
+        starts = []
+        nos = []
+        cols = []
+        unsafe = [0]
+        for no, content, col in parts:
             if not content:
                 continue
             if joined:
                 joined += " "
                 owners.append(no)
+            starts.append(len(joined))
+            nos.append(no)
+            cols.append(col)
+            unsafe.append(unsafe[-1] + (col is None))
             joined += content
             owners.extend([no] * len(content))
         masked = _mask(joined)
@@ -281,11 +307,22 @@ def read_prose(text, footer=None):
             if not s:
                 continue
             prose = _prose(s)
-            if _count(prose)[0] == 0:
+            words, chars = _count(prose)
+            if words == 0:
                 continue
-            line = owners[a + len(seg) - len(seg.lstrip())]
-            out.append((s, line, ari(prose)))
-    return [Sentence(f"S{i}", line, s, g) for i, (s, line, g) in enumerate(out, 1)]
+            sa = a + len(seg) - len(seg.lstrip())
+            sb = sa + len(s)
+            i = bisect.bisect_right(starts, sa) - 1
+            j = bisect.bisect_right(starts, sb - 1) - 1
+            where = None
+            if unsafe[j + 1] == unsafe[i]:
+                where = ((nos[i], cols[i] + sa - starts[i]), (nos[j], cols[j] + sb - starts[j]))
+            out.append((s, owners[sa], _grade(words, chars), where, kind, level, joined if kind == "heading" else None))
+    return [Located(Sentence(f"S{i}", line, s, g), where, kind, level, head) for i, (s, line, g, where, kind, level, head) in enumerate(out, 1)]
+
+
+def read_prose(text, footer=None):
+    return [x.sentence for x in _sentences(text.replace("\r\n", "\n").split("\n"), footer)]
 
 
 class ConfigError(Exception):
@@ -900,12 +937,152 @@ def run_external(entries, draft_path, timeout=EXTERNAL_TIMEOUT):
     return problems
 
 
-def _read_text(path):
+_ID = re.compile(r"[Ss]([0-9]{1,9})")
+_SHA_TOKEN = re.compile(r"(?<![0-9A-Za-z])[0-9a-f]{7,40}(?![0-9A-Za-z])")
+_NUMBER = re.compile(r"\d+(?:[.,:/]\d+)*")
+_WORD = re.compile(r"[a-z]+(?:['\u2019][a-z]+)*")
+_NEGATIONS = frozenset(("not", "no", "never", "none", "nothing", "nobody", "nowhere", "neither", "nor", "cannot", "without"))
+Edit = namedtuple("Edit", "text first old new")
+
+
+class Refused(Exception):
+    def __init__(self, reasons, line=0, sid=""):
+        super().__init__("\n".join(reasons))
+        self.reasons = reasons
+        self.line = line
+        self.sid = sid
+
+
+def _negated(text):
+    for w in _WORD.findall(_prose(text).lower()):
+        if w in _NEGATIONS or w.endswith("n't") or w.endswith("n\u2019t"):
+            return True
+    return False
+
+
+def _sha_spans(text):
+    return [m.span() for m in _SHA_TOKEN.finditer(text) if not m.group().isdigit() and not m.group().isalpha()]
+
+
+def _lost(old, new):
+    out = []
+    spans = _code_spans(old)
+    kept = {new[a:b] for a, b in _code_spans(new)}
+    for span in dict.fromkeys(old[a:b] for a, b in spans):
+        if span not in kept:
+            out.append(f"the new sentence drops the inline code {span}")
+    old = _edit(old, spans, lambda t: " ")
+    new = _edit(new, _code_spans(new), lambda t: " ")
+    spans = _sha_spans(old)
+    kept = {new[a:b] for a, b in _sha_spans(new)}
+    for sha in dict.fromkeys(old[a:b] for a, b in spans):
+        if sha not in kept:
+            out.append(f"the new sentence drops the commit sha {sha}")
+    old = _edit(old, spans, lambda t: " ")
+    new = _edit(new, _sha_spans(new), lambda t: " ")
+    kept = {n.replace(",", "") for n in _NUMBER.findall(new)}
+    for num in dict.fromkeys(_NUMBER.findall(old)):
+        if num.replace(",", "") not in kept:
+            out.append(f"the new sentence drops the number {num}")
+    return out
+
+
+def _listed(heading, entries):
+    h = _prose(heading).strip().lower()
+    for entry in entries:
+        e = entry.strip().lower()
+        if e and (h == e or h.startswith(e) and not h[len(e)].isalnum()):
+            return entry
+    return None
+
+
+def _headings_over(located, n):
+    stack = []
+    for x in located[:n]:
+        if x.kind == "heading":
+            while stack and stack[-1][0] >= x.level:
+                stack.pop()
+            stack.append((x.level, x.heading))
+    return stack
+
+
+def _guards(located, n, old, new, entries):
+    x = located[n - 1]
+    out = _lost(old, new)
+    if not entries:
+        return out
+    if x.kind == "heading":
+        hit = _listed(x.heading, entries)
+        if hit and not _listed(x.heading.replace(old, new, 1), entries):
+            out.append(f'"{hit}" is a heading on the keep_negation list; keep it, or the guard stops working')
+        stack = [h for h in _headings_over(located, n - 1) if h[1] is not x.heading]
+    else:
+        stack = _headings_over(located, n)
+    if _negated(old) and not _negated(new):
+        for _, text in stack:
+            hit = _listed(text, entries)
+            if hit:
+                out.append(f'it sits under "{hit}" and says no there, so the new sentence must say no too (with not, never, no, without and so on)')
+                break
+    return out
+
+
+def set_sentence(text, sid, new, profile=None):
+    m = _ID.fullmatch(sid)
+    if not m:
+        raise ConfigError(f"{sid[:40]!r} is not a sentence id; ids look like S12, and furbish check prints them")
+    n = int(m.group(1))
+    p = profile or {}
+    raw = text.split("\n")
+    crs = [l.endswith("\r") for l in raw]
+    lines = [l[:-1] if c else l for l, c in zip(raw, crs)]
+    footer = p.get("footer")
+    located = _sentences(lines, footer)
+    if not located:
+        raise ConfigError("the draft has no sentences")
+    if not 1 <= n <= len(located):
+        raise ConfigError(f"the draft has only S1" if len(located) == 1 else f"the draft has S1 to S{len(located)}, so there is no {sid[:40]!r}")
+    x = located[n - 1]
+    old = x.sentence.text
+    sid = f"S{n}"
+    line = x.sentence.line
+    new = new.strip()
+    if not new:
+        raise Refused(["the new sentence is empty; to remove a sentence, edit the file yourself"], line, sid)
+    if _CONTROL.search(new):
+        raise Refused(["the new sentence must be one plain line, with no line breaks, control characters or text-direction marks"], line, sid)
+    if x.where is None:
+        raise Refused(["this sentence shares its line with a comment, and furbish would eat the comment, so change it by hand"], line, sid)
+    (l1, c1), (l2, c2) = x.where
+    if l1 == l2 and lines[l1 - 1][c1:c2] != old:
+        raise Refused(["furbish could not find this sentence safely, so change it by hand"], line, sid)
+    if new == old:
+        return Edit(text, l1, lines[l1 - 1:l2], lines[l1 - 1])
+    reasons = _guards(located, n, old, new, p.get("keep_negation") or [])
+    if reasons:
+        raise Refused(reasons, line, sid)
+    merged = lines[l1 - 1][:c1] + new + lines[l2 - 1][c2:]
+    out = lines[:l1 - 1] + [merged] + lines[l2:]
+    ends = crs[:l1 - 1] + [crs[l2 - 1]] + crs[l2:]
+    before = [y.sentence.text for y in located]
+    after = [y.sentence.text for y in _sentences(out, footer)]
+    k = len(after) - len(before) + 1
+    if k < 1 or after[:n - 1] != before[:n - 1] or after[n - 1 + k:] != before[n:] or (k == 1 and after[n - 1] != new):
+        raise Refused(["the sentences around it would not read the same after this change; end the new text with a full stop, and do not start a code block, comment, table or heading with it"], line, sid)
+    joined = "\n".join(l + "\r" if c else l for l, c in zip(out, ends))
+    return Edit(joined, l1, lines[l1 - 1:l2], merged)
+
+
+def _read_text(path, strict=False):
     try:
         with open(path, "rb") as f:
-            return f.read().decode("utf-8", errors="replace")
+            data = f.read()
     except OSError as e:
         raise ConfigError(f"cannot read {path}: {e.strerror or e}") from None
+    try:
+        return data.decode("utf-8", errors="strict" if strict else "replace")
+    except UnicodeDecodeError:
+        raise ConfigError(f"{path} is not UTF-8 text, so furbish will not rewrite it") from None
 
 
 def _template_lines(profile):
@@ -946,6 +1123,55 @@ def _run_check(args):
     return 1 if problems else 0
 
 
+def _write_text(path, text):
+    real = os.path.realpath(path)
+    try:
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(real), prefix=".furbish-")
+    except OSError as e:
+        raise ConfigError(f"cannot write {path}: {e.strerror or e}") from None
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(text.encode("utf-8"))
+        shutil.copymode(real, tmp)
+        os.replace(tmp, real)
+    except (OSError, ValueError) as e:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise ConfigError(f"cannot write {path}: {getattr(e, 'strerror', None) or e}") from None
+
+
+def _run_set(args):
+    shown = _plain(args.draft)
+    try:
+        path = find_config(os.environ)
+        config = load_config(path) if path else None
+        profile = pick_profile(config, args.repo)
+        text = _read_text(args.draft, True)
+        edit = set_sentence(text, args.sid, args.text, profile)
+        if edit.text != text and args.write:
+            _write_text(args.draft, edit.text)
+    except Refused as e:
+        where = f"{shown}:{e.line}: " if e.line else f"{shown}: "
+        for reason in e.reasons:
+            print(f"{where}{e.sid}: {_plain(reason)}", file=sys.stderr)
+        return 1
+    except ConfigError as e:
+        print(f"furbish: {_plain(str(e))}", file=sys.stderr)
+        return 2
+    if edit.text == text:
+        print("furbish: that sentence already reads that way, so nothing changed", file=sys.stderr)
+        return 0
+    print(f"--- {shown}\n+++ {shown}\n@@ -{edit.first},{len(edit.old)} +{edit.first},1 @@")
+    for l in edit.old:
+        print("-" + _plain(l))
+    print("+" + _plain(edit.new))
+    if not args.write:
+        print("furbish: nothing was written; add --write to change the file", file=sys.stderr)
+    return 0
+
+
 def main():
     argv = sys.argv[1:]
     ap = argparse.ArgumentParser(prog="furbish", description="Checks and tidies GitHub PR and issue drafts before they're posted: plain words, house rules, safe fixes. Script-first and offline.", epilog=PLANNED, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -955,12 +1181,20 @@ def main():
     ck.add_argument("draft", help="the draft file to check")
     ck.add_argument("--repo", metavar="OWNER/NAME", help="the repo profile from the config file to use; without it, default_repo is used")
     ck.add_argument("--post", action="store_true", help="also grade the reading level, as you would just before a post goes up")
+    st = sub.add_parser("set", help="replace one sentence by its id", description="Replaces one sentence of a draft, found by the id that furbish check prints (S12). The new sentence must keep every number, commit sha and inline-code span of the old one, and under a heading from keep_negation it must keep its negation. Prints the change as a diff, and writes the file only with --write. Exits 0 on success, 1 when the new sentence is refused and 2 when it cannot run.")
+    st.add_argument("draft", help="the draft file to change")
+    st.add_argument("sid", metavar="ID", help="the sentence id, for example S12")
+    st.add_argument("text", help="the new sentence, as one line; put -- before it if it starts with a dash")
+    st.add_argument("--repo", metavar="OWNER/NAME", help="the repo profile from the config file to use; without it, default_repo is used")
+    st.add_argument("--write", action="store_true", help="change the file; without it nothing is written")
     if not argv:
         ap.print_help(sys.stderr)
         return 2
     args = ap.parse_args(argv)
     if args.command == "check":
         return _run_check(args)
+    if args.command == "set":
+        return _run_set(args)
     return 0
 
 

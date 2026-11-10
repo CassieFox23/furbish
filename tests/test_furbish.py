@@ -817,7 +817,8 @@ class TestCheckCli(ConfigCase):
         self.assertEqual(r.returncode, 0)
         self.assertIn("check", r.stdout)
         self.assertNotIn("planned: print only the problems", r.stdout)
-        self.assertIn("planned: replace one sentence", r.stdout)
+        self.assertNotIn("planned: replace one sentence", r.stdout)
+        self.assertIn("planned: safe mechanical edits", r.stdout)
 
 
 LINES_SCRIPT = """import sys
@@ -1093,6 +1094,481 @@ class TestCheckCliWithCheckers(ExternalCase):
         self.assertFalse(os.path.exists(marker))
         self.run_check("--repo", "a/b", self.draft(), cfg=both)
         self.assertTrue(os.path.exists(marker))
+
+
+class TestSetWhere(unittest.TestCase):
+    def put(self, text, sid, new, profile=None):
+        return furbish.set_sentence(text, sid, new, profile).text
+
+    def test_one_sentence_is_replaced_and_the_rest_is_kept(self):
+        self.assertEqual(self.put("First one. Second one. Third one.\n", "S2", "Changed it."), "First one. Changed it. Third one.\n")
+
+    def test_a_repeated_sentence_is_found_by_position_not_by_search(self):
+        self.assertEqual(self.put("Yes. Yes.\n", "S2", "No."), "Yes. No.\n")
+        self.assertEqual(self.put("Yes. Yes.\n", "S1", "No."), "No. Yes.\n")
+        self.assertEqual(self.put("Yes.\n\nYes.\n\nYes.\n", "S3", "No."), "Yes.\n\nYes.\n\nNo.\n")
+
+    def test_a_wrapped_sentence_becomes_one_line(self):
+        d = "Intro line. This sentence is long\nand wraps here. Tail.\n"
+        self.assertEqual(texts(d)[1], "This sentence is long and wraps here.")
+        self.assertEqual(self.put(d, "S2", "Short."), "Intro line. Short. Tail.\n")
+
+    def test_the_edit_reports_the_lines_it_replaced(self):
+        e = furbish.set_sentence("Top.\n\nA sentence that\nwraps here.\n\nEnd.\n", "S2", "Short.")
+        self.assertEqual((e.first, e.old, e.new), (3, ["A sentence that", "wraps here."], "Short."))
+        e = furbish.set_sentence("One here. Two here.\n", "S1", "Uno.")
+        self.assertEqual((e.first, e.old, e.new), (1, ["One here. Two here."], "Uno. Two here."))
+
+    def test_list_quote_and_heading_markers_stay(self):
+        d = "- Item one.\n> Quoted words.\n# Title here\n"
+        self.assertEqual(texts(d), ["Item one.", "Quoted words.", "Title here"])
+        self.assertEqual(self.put(d, "S1", "Item two."), "- Item two.\n> Quoted words.\n# Title here\n")
+        self.assertEqual(self.put(d, "S2", "Said it."), "- Item one.\n> Said it.\n# Title here\n")
+        self.assertEqual(self.put(d, "S3", "New title"), "- Item one.\n> Quoted words.\n# New title\n")
+
+    def test_a_wrapped_list_item_and_a_wrapped_quote(self):
+        self.assertEqual(self.put("1. First step is long\n   and continues.\n2. Next.\n", "S1", "Do it."), "1. Do it.\n2. Next.\n")
+        self.assertEqual(self.put("> A quoted line that\n> goes on here. Then more.\n", "S1", "Short."), "> Short. Then more.\n")
+
+    def test_indent_and_trailing_spaces_stay(self):
+        self.assertEqual(self.put("  - Item.  \n", "S1", "Done."), "  - Done.  \n")
+        self.assertEqual(self.put("Words here.   \nMore words.\n", "S1", "Fine."), "Fine.   \nMore words.\n")
+
+    def test_line_endings_survive(self):
+        self.assertEqual(self.put("One here.\r\nTwo here.\r\nThree here.\n", "S2", "Two changed."), "One here.\r\nTwo changed.\r\nThree here.\n")
+        self.assertEqual(self.put("A sentence that\r\nwraps here.\r\nNext one.\r\n", "S1", "Short."), "Short.\r\nNext one.\r\n")
+        self.assertEqual(self.put("One here.\nTwo here.\r\n", "S2", "Two changed."), "One here.\nTwo changed.\r\n")
+
+    def test_a_lone_carriage_return_is_not_a_line_break(self):
+        d = "One here.\rTwo here.\nThree here.\n"
+        self.assertEqual(lines(d), [1, 1, 2])
+        self.assertEqual(self.put(d, "S3", "Done."), "One here.\rTwo here.\nDone.\n")
+
+    def test_odd_line_breaks_do_not_move_the_ids(self):
+        d = "One here.\x0bTwo here.\x85Three here.\u2028Four here.\n\nFive here.\n"
+        self.assertEqual(lines(d), [1, 1, 1, 1, 3])
+        self.assertEqual(self.put(d, "S2", "Done."), "One here.\x0bDone.\x85Three here.\u2028Four here.\n\nFive here.\n")
+        self.assertEqual(self.put(d, "S5", "Done."), "One here.\x0bTwo here.\x85Three here.\u2028Four here.\n\nDone.\n")
+
+    def test_a_replacement_may_read_as_more_than_one_sentence(self):
+        out = self.put("One. Two. Three.\n", "S2", "A. B.")
+        self.assertEqual(out, "One. A. B. Three.\n")
+        self.assertEqual(texts(out), ["One.", "A.", "B.", "Three."])
+
+    def test_the_replacement_is_stripped(self):
+        self.assertEqual(self.put("One here. Two here.\n", "S1", "  Uno.\t "), "Uno. Two here.\n")
+
+    def test_the_same_text_changes_nothing(self):
+        e = furbish.set_sentence("One here. Two here.\n", "S2", "Two here.")
+        self.assertEqual(e.text, "One here. Two here.\n")
+
+    def test_a_replacement_that_breaks_the_rest_of_the_draft_is_refused(self):
+        for new in ("```", "~~~", "<!-- x -->", "<!-- open", "| a | b |", "<details>", "-->"):
+            for d in ("Hello there.\n\nKeep this.\n", "Hello there. Keep this.\n"):
+                with self.assertRaises(furbish.Refused, msg=(new, d)):
+                    furbish.set_sentence(d, "S1", new)
+
+    def test_a_replacement_that_cannot_be_one_plain_line_is_refused(self):
+        for new in ("", "   ", "a\nb", "a\rb", "a\x1b[31mb", "a\u202eb", "a\u2028b", "a\x00b", "bad \udc80 text", "a\x85b", "a\x0bb"):
+            with self.assertRaises(furbish.Refused, msg=repr(new)):
+                furbish.set_sentence("One here. Two here.\n", "S1", new)
+
+    def test_ids_are_read_by_the_same_reader_as_check(self):
+        d = "One here.\n\n-- Sent from the made-up example footer\n\nTwo here.\n"
+        p = {"footer": FOOTER}
+        self.assertEqual(self.put(d, "S2", "Done.", p), "One here.\n\n-- Sent from the made-up example footer\n\nDone.\n")
+        self.assertEqual(self.put(d, "S2", "Done."), "One here.\n\nDone.\n\nTwo here.\n")
+
+    def test_code_comments_and_tables_are_not_numbered_and_not_touched(self):
+        d = "Text one.\n```\nCode. Not prose.\n```\n| a | b |\n<!-- gone. -->\nText two.\n"
+        self.assertEqual(texts(d), ["Text one.", "Text two."])
+        self.assertEqual(self.put(d, "S2", "Done."), "Text one.\n```\nCode. Not prose.\n```\n| a | b |\n<!-- gone. -->\nDone.\n")
+
+    def test_a_sentence_after_a_comment_closes_is_found(self):
+        d = "<!--\nnote\n--> After words here. Next.\n"
+        self.assertEqual(self.put(d, "S1", "New."), "<!--\nnote\n--> New. Next.\n")
+        self.assertEqual(self.put(d, "S2", "New."), "<!--\nnote\n--> After words here. New.\n")
+
+    def test_a_sentence_on_a_line_with_a_comment_is_refused_and_the_comment_is_never_eaten(self):
+        for d in ("Before <!-- note --> after words. Next one.\n", "Words here. <!-- note -->\n", "Start of it <!-- note -->\nand the end of it.\n"):
+            with self.assertRaises(furbish.Refused) as cm:
+                furbish.set_sentence(d, "S1", "New.")
+            self.assertIn("comment", str(cm.exception))
+
+    def test_a_sentence_after_a_one_line_comment_on_its_own_line_is_fine(self):
+        d = "<!-- note -->\nWords here.\n"
+        self.assertEqual(self.put(d, "S1", "New."), "<!-- note -->\nNew.\n")
+
+    def test_inline_code_with_odd_backticks_is_kept_whole(self):
+        d = "Run ``a ` b`` now. Next one.\n"
+        self.assertEqual(self.put(d, "S1", "Run ``a ` b`` soon."), "Run ``a ` b`` soon. Next one.\n")
+
+    def test_unknown_or_badly_formed_ids_cannot_run(self):
+        d = "One here. Two here. Three here.\n"
+        for sid in ("S4", "S0", "12", "S", "S-1", "Sx", "S1.5", "S 2", "", "S" + "9" * 5000, "S\u0663", "S+1", "SS1"):
+            with self.assertRaises(furbish.ConfigError, msg=sid) as cm:
+                furbish.set_sentence(d, sid, "New.")
+            self.assertNotIsInstance(cm.exception, furbish.Refused)
+        with self.assertRaises(furbish.ConfigError) as cm:
+            furbish.set_sentence(d, "S4", "New.")
+        self.assertIn("S1 to S3", str(cm.exception))
+
+    def test_a_lower_case_id_works(self):
+        self.assertEqual(self.put("One here. Two here.\n", "s2", "Done."), "One here. Done.\n")
+
+    def test_a_draft_with_no_sentences_cannot_run(self):
+        with self.assertRaises(furbish.ConfigError) as cm:
+            furbish.set_sentence("```\ncode\n```\n", "S1", "New.")
+        self.assertIn("no sentences", str(cm.exception))
+
+
+class TestSetGuards(unittest.TestCase):
+    P = {"keep_negation": ["Not run", "Still not run"]}
+
+    def refuse(self, text, sid, new, profile=None, *words):
+        with self.assertRaises(furbish.Refused, msg=new) as cm:
+            furbish.set_sentence(text, sid, new, profile)
+        for w in words:
+            self.assertIn(w, str(cm.exception))
+        return cm.exception
+
+    def allow(self, text, sid, new, profile=None):
+        return furbish.set_sentence(text, sid, new, profile).text
+
+    def test_numbers_must_stay(self):
+        d = "It took 12 seconds. Next one.\n"
+        self.refuse(d, "S1", "It took a while.", None, "12")
+        self.refuse(d, "S1", "It took 120 seconds.", None, "12")
+        self.refuse(d, "S1", "It took 1 or 2 seconds.", None, "12")
+        self.assertEqual(self.allow(d, "S1", "Twelve is 12 s."), "Twelve is 12 s. Next one.\n")
+
+    def test_numbers_with_points_and_commas_are_one_number(self):
+        d = "It ran 3.5 times in 1,000 tries.\n"
+        self.refuse(d, "S1", "It ran 35 times in 1,000 tries.", None, "3.5")
+        self.refuse(d, "S1", "It ran 3 times in 1,000 tries.", None, "3.5")
+        self.refuse(d, "S1", "It ran 3.5 times in 100 tries.", None, "1,000")
+        self.assertEqual(self.allow(d, "S1", "In 1000 tries it ran 3.5 times."), "In 1000 tries it ran 3.5 times.\n")
+        self.assertEqual(self.allow("Over 65536 bytes.\n", "S1", "Over 65,536 bytes."), "Over 65,536 bytes.\n")
+
+    def test_issue_numbers_and_times_must_stay(self):
+        self.refuse("See #123 at 12:30.\n", "S1", "See the issue at 12:30.", None, "123")
+        self.refuse("See #123 at 12:30.\n", "S1", "See #123 at noon.", None, "12:30")
+
+    def test_commit_shas_must_stay(self):
+        d = "Fixed in abc1234 today.\n"
+        self.refuse(d, "S1", "Fixed today.", None, "abc1234")
+        self.refuse(d, "S1", "Fixed in abc12345 today.", None, "abc1234")
+        self.refuse(d, "S1", "Fixed in abc123 today.", None, "abc1234")
+        self.assertEqual(self.allow(d, "S1", "Today it is fixed in abc1234."), "Today it is fixed in abc1234.\n")
+
+    def test_a_long_sha_and_its_digits_are_one_thing(self):
+        d = "Reverted 0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b here.\n"
+        self.refuse(d, "S1", "Reverted 0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9 here.", None, "0a1b2c3d")
+        self.allow(d, "S1", "Here it is 0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b.")
+
+    def test_inline_code_must_stay(self):
+        d = "Run `npm test` now.\n"
+        self.refuse(d, "S1", "Run it now.", None, "`npm test`")
+        self.refuse(d, "S1", "Run `npm` now.", None, "`npm test`")
+        self.refuse("Use `a`.\n", "S1", "Use `ab`.", None, "`a`")
+        self.refuse("Use `a`.\n", "S1", "Use a.", None, "`a`")
+        self.assertEqual(self.allow(d, "S1", "Now run `npm test`."), "Now run `npm test`.\n")
+        self.assertEqual(self.allow("Use `a`.\n", "S1", "Use `a` or `b`."), "Use `a` or `b`.\n")
+
+    def test_every_dropped_thing_is_listed(self):
+        e = self.refuse("Fixed 12 in abc1234 with `x`.\n", "S1", "Fixed it.")
+        text = str(e)
+        for w in ("12", "abc1234", "`x`"):
+            self.assertIn(w, text)
+        self.assertEqual(len(e.reasons), 3)
+
+    def test_a_number_inside_a_code_span_is_part_of_the_span(self):
+        d = "Run `step 12` now.\n"
+        self.assertEqual(self.allow(d, "S1", "Now run `step 12`."), "Now run `step 12`.\n")
+        self.refuse(d, "S1", "Run `step` 12 now.", None, "`step 12`")
+
+    def test_a_link_target_is_kept_with_its_numbers(self):
+        d = "See [the issue](https://example.com/issues/77) now.\n"
+        self.refuse(d, "S1", "See the issue now.", None, "77")
+
+    def test_nothing_to_keep_means_anything_goes(self):
+        self.assertEqual(self.allow("Words here, plain ones.\n", "S1", "Other words."), "Other words.\n")
+
+    NOT_RUN = "### Not run\n\n- The Windows build was not run.\n- Nothing ran on the GPU.\n\n### Notes\n\nThe build did not fail.\n"
+
+    def test_a_negation_under_a_listed_heading_must_stay(self):
+        d = self.NOT_RUN
+        self.assertEqual([s.id for s in furbish.read_prose(d)][1:3], ["S2", "S3"])
+        e = self.refuse(d, "S2", "The Windows build ran.", self.P, "not")
+        self.assertIn("Not run", str(e))
+        self.refuse(d, "S3", "The GPU ran.", self.P)
+        self.assertIn("never run", self.allow(d, "S2", "The Windows build was never run.", self.P))
+        self.assertIn("wasn't run", self.allow(d, "S2", "The Windows build wasn't run.", self.P))
+        self.assertIn("wasn\u2019t run", self.allow(d, "S2", "The Windows build wasn\u2019t run.", self.P))
+        self.assertIn("No one ran", self.allow(d, "S3", "No one ran the GPU.", self.P))
+        self.assertIn("without", self.allow(d, "S3", "It ran without the GPU.", self.P))
+
+    def test_each_negation_word_counts(self):
+        for w in ("not", "no", "never", "none", "nothing", "nobody", "nowhere", "neither", "nor", "cannot", "without", "Not", "NEVER", "didn't", "can't", "won't", "isn't", "hasn't", "ain't"):
+            self.assertTrue(furbish._negated(f"It {w} ran."), w)
+        for w in ("note", "know", "nothingness", "another", "knot", "notice", "now", "node", "non", "nope"):
+            self.assertFalse(furbish._negated(f"It {w} ran."), w)
+
+    def test_a_negation_word_in_code_or_a_link_does_not_count(self):
+        d = "### Not run\n\n- It was not run.\n"
+        self.refuse(d, "S2", "It ran with `--no-cache`.", self.P)
+        self.refuse(d, "S2", "It ran, see [there](https://example.com/not/there).", self.P)
+        self.refuse(d, "S2", "It ran, see https://example.com/not/there.", self.P)
+        self.refuse(d, "S2", "Take note.", self.P)
+
+    def test_a_struck_through_item_keeps_its_negation(self):
+        d = "### Not run\n\n- The Windows build was not run.\n"
+        self.assertEqual(self.allow(d, "S2", "~~The Windows build was not run.~~", self.P), "### Not run\n\n- ~~The Windows build was not run.~~\n")
+
+    def test_a_sentence_without_negation_has_none_to_keep(self):
+        d = "### Not run\n\n- The Windows build.\n"
+        self.assertEqual(self.allow(d, "S2", "The Windows build passed.", self.P), "### Not run\n\n- The Windows build passed.\n")
+
+    def test_other_headings_and_no_profile_are_not_guarded(self):
+        d = self.NOT_RUN
+        self.assertIn("The build failed.", self.allow(d, "S5", "The build failed.", self.P))
+        self.assertIn("The Windows build ran.", self.allow(d, "S2", "The Windows build ran."))
+        self.assertIn("The Windows build ran.", self.allow(d, "S2", "The Windows build ran.", {"keep_negation": []}))
+        self.assertIn("The Windows build ran.", self.allow(d, "S2", "The Windows build ran.", {}))
+
+    def test_a_listed_heading_covers_what_is_nested_under_it_and_stops_at_the_next_one_of_its_level(self):
+        d = "## Not run\n\n### Node 22\n\nIt was not run here.\n\n#### Deeper\n\nNor here.\n\n## Done\n\nIt was not run there.\n"
+        self.assertEqual([s.id for s in furbish.read_prose(d)], ["S1", "S2", "S3", "S4", "S5", "S6", "S7"])
+        self.refuse(d, "S3", "It ran here.", self.P)
+        self.refuse(d, "S5", "It ran here.", self.P)
+        self.assertIn("It ran there.", self.allow(d, "S7", "It ran there.", self.P))
+
+    def test_a_heading_inside_a_code_fence_is_not_a_heading(self):
+        d = "```\n# Not run\n```\n\nThe tests were not run.\n"
+        self.assertIn("The tests ran.", self.allow(d, "S1", "The tests ran.", self.P))
+
+    def test_the_heading_match_ignores_case_and_allows_a_tail(self):
+        for h in ("NOT RUN", "not run", "Not run:", "Not run yet (testing now)", "Not run - and why", "**Not run**"):
+            d = f"### {h}\n\nIt was not run.\n"
+            self.refuse(d, "S2", "It ran.", self.P)
+        for h in ("Not running", "Not runnable", "Notrun", "Still testing", "Run"):
+            d = f"### {h}\n\nIt was not run.\n"
+            self.assertIn("It ran.", self.allow(d, "S2", "It ran.", self.P), h)
+        d = "### Still not run\n\nIt was not run.\n"
+        self.refuse(d, "S2", "It ran.", self.P)
+
+    def test_a_listed_heading_cannot_be_renamed_away(self):
+        d = self.NOT_RUN
+        self.refuse(d, "S1", "Tested", self.P, "Not run")
+        self.assertEqual(self.allow(d, "S1", "Not run at all", self.P)[:20], "### Not run at all\n\n")
+        self.assertIn("### Other", self.allow(d, "S4", "Other", self.P))
+
+    def test_a_bold_line_is_not_a_heading(self):
+        d = "**Not run**\n\nIt was not run.\n"
+        self.assertIn("It ran.", self.allow(d, "S2", "It ran.", self.P))
+
+    def test_a_guard_failure_and_a_structure_failure_are_both_refusals(self):
+        d = "### Not run\n\nIt was not run 12 times.\n"
+        self.refuse(d, "S2", "```", self.P)
+        self.refuse(d, "S2", "It ran.", self.P, "12", "not")
+
+
+class TestSetCli(ConfigCase):
+    def env(self, **extra):
+        e = {"HOME": self.tmp, "PATH": "/usr/bin:/bin"}
+        e.update(extra)
+        return e
+
+    def run_set(self, *args, cwd=None, **extra):
+        return subprocess.run([sys.executable, "-I", SCRIPT, "set", *args], capture_output=True, text=True, env=self.env(**extra), cwd=cwd)
+
+    def draft(self, text, name="draft.md"):
+        return self.write(text, name)
+
+    def read(self, path):
+        with open(path, "rb") as f:
+            return f.read()
+
+    def test_without_write_it_prints_the_change_and_touches_nothing(self):
+        path = self.draft("One here.\n\nTwo here. Three here.\n")
+        before = self.read(path)
+        r = self.run_set(path, "S2", "Deux.")
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(self.read(path), before)
+        self.assertEqual(r.stdout.splitlines(), [f"--- {path}", f"+++ {path}", "@@ -3,1 +3,1 @@", "-Two here. Three here.", "+Deux. Three here."])
+        self.assertIn("--write", r.stderr)
+        self.assertIn("nothing", r.stderr)
+
+    def test_with_write_it_changes_the_file_and_says_so_the_same_way(self):
+        path = self.draft("One here.\n\nTwo here. Three here.\n")
+        r = self.run_set(path, "S2", "Deux.", "--write")
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(self.read(path), b"One here.\n\nDeux. Three here.\n")
+        self.assertEqual(r.stdout.splitlines()[2:], ["@@ -3,1 +3,1 @@", "-Two here. Three here.", "+Deux. Three here."])
+        self.assertEqual(r.stderr, "")
+
+    def test_a_wrapped_sentence_shows_every_line_it_replaces(self):
+        path = self.draft("Top.\n\nA sentence that\nwraps here. After.\n")
+        r = self.run_set(path, "S2", "Short.")
+        self.assertEqual(r.stdout.splitlines()[2:], ["@@ -3,2 +3,1 @@", "-A sentence that", "-wraps here. After.", "+Short. After."])
+
+    def test_a_crlf_draft_keeps_its_line_endings_on_write(self):
+        path = self.draft("")
+        with open(path, "wb") as f:
+            f.write(b"One here.\r\nTwo here.\r\n")
+        r = self.run_set(path, "S2", "Deux.", "--write")
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(self.read(path), b"One here.\r\nDeux.\r\n")
+        self.assertNotIn("\r", r.stdout)
+
+    def test_a_refusal_prints_each_reason_with_the_line_and_id_and_writes_nothing(self):
+        path = self.draft("Intro.\n\nIt took 12 seconds with `x`.\n")
+        before = self.read(path)
+        r = self.run_set(path, "S2", "It was quick.", "--write")
+        self.assertEqual((r.returncode, r.stdout), (1, ""))
+        self.assertEqual(self.read(path), before)
+        out = r.stderr.splitlines()
+        self.assertEqual(len(out), 2)
+        for line in out:
+            self.assertTrue(line.startswith(f"{path}:3: S2: "), line)
+        self.assertIn("12", r.stderr)
+        self.assertIn("`x`", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_the_repo_profile_guards_a_negation(self):
+        cfg = self.write('[repo."a/b"]\nkeep_negation = ["Not run"]\n', "cfg.toml")
+        path = self.draft("### Not run\n\nIt was not run.\n")
+        r = self.run_set(path, "S2", "It ran.", "--repo", "a/b", FURBISH_CONFIG=cfg)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("Not run", r.stderr)
+        r = self.run_set(path, "S2", "It ran.", FURBISH_CONFIG=cfg)
+        self.assertEqual(r.returncode, 0)
+        cfg2 = self.write('default_repo = "a/b"\n[repo."a/b"]\nkeep_negation = ["Not run"]\n', "cfg2.toml")
+        self.assertEqual(self.run_set(path, "S2", "It ran.", FURBISH_CONFIG=cfg2).returncode, 1)
+
+    def test_the_ids_are_the_ones_check_prints(self):
+        cfg = self.write(f'[repo."a/b"]\nfooter = {json.dumps(FOOTER)}\n', "cfg.toml")
+        path = self.draft(f"{EASY}\n\n-- Sent from the made-up example footer\n\n{HARD}\n")
+        r = subprocess.run([sys.executable, "-I", SCRIPT, "check", "--post", "--repo", "a/b", path], capture_output=True, text=True, env=self.env(FURBISH_CONFIG=cfg))
+        m = re.search(r":5: (S\d+): ", r.stdout)
+        self.assertTrue(m, r.stdout)
+        self.assertEqual(m.group(1), "S2")
+        r = self.run_set(path, m.group(1), "Look at it again.", "--repo", "a/b", "--write", FURBISH_CONFIG=cfg)
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(self.read(path).decode(), f"{EASY}\n\n-- Sent from the made-up example footer\n\nLook at it again.\n")
+
+    def test_things_that_cannot_run_exit_2_with_a_plain_message(self):
+        path = self.draft("One here.\n")
+        for args in ((path, "S9", "New."), (path, "twelve", "New."), (os.path.join(self.tmp, "missing.md"), "S1", "New."), (path, "S" + "9" * 5000, "New."), (path, "S1", "New.", "--repo", "x/y")):
+            r = self.run_set(*args)
+            self.assertEqual((r.returncode, r.stdout), (2, ""), args)
+            self.assertTrue(r.stderr.startswith("furbish: "), r.stderr)
+            self.assertNotIn("Traceback", r.stderr)
+        self.assertIn("only S1", self.run_set(path, "S9", "New.").stderr)
+
+    def test_a_missing_argument_is_a_usage_error(self):
+        path = self.draft("One here.\n")
+        self.assertEqual(self.run_set(path, "S1").returncode, 2)
+        self.assertEqual(self.run_set().returncode, 2)
+
+    def test_a_draft_that_is_not_utf8_is_never_rewritten(self):
+        path = self.draft("")
+        with open(path, "wb") as f:
+            f.write(b"Caf\xe9 is here. Two here.\n")
+        for extra in ((), ("--write",)):
+            r = self.run_set(path, "S2", "Deux.", *extra)
+            self.assertEqual((r.returncode, r.stdout), (2, ""))
+            self.assertIn("UTF-8", r.stderr)
+        self.assertEqual(self.read(path), b"Caf\xe9 is here. Two here.\n")
+
+    def test_control_characters_are_not_printed(self):
+        path = self.draft("Esc \x1b[mred\x1b]t\x07 here \u202e done.\n")
+        r = self.run_set(path, "S1", "New.")
+        self.assertEqual(r.returncode, 0)
+        for bad in ("\x1b", "\x07", "\u202e"):
+            self.assertNotIn(bad, r.stdout)
+        self.assertIn("red", r.stdout)
+        r = self.run_set(self.draft("One here.\n", "d\x1b[31mx.md"), "S1", "Two.")
+        self.assertNotIn("\x1b", r.stdout)
+
+    def test_a_refusal_does_not_print_control_characters(self):
+        path = self.draft("It took 12 \x1b[31mseconds\x1b[0m.\n")
+        r = self.run_set(path, "S1", "It took a while.")
+        self.assertEqual(r.returncode, 1)
+        self.assertNotIn("\x1b", r.stderr)
+
+    def test_a_symlinked_draft_is_written_through_the_link(self):
+        real = self.draft("One here. Two here.\n", "real.md")
+        link = os.path.join(self.tmp, "link.md")
+        os.symlink(real, link)
+        r = self.run_set(link, "S2", "Deux.", "--write")
+        self.assertEqual(r.returncode, 0)
+        self.assertTrue(os.path.islink(link))
+        self.assertEqual(self.read(real), b"One here. Deux.\n")
+
+    def test_the_file_mode_survives_a_write_and_no_temp_file_is_left(self):
+        path = self.draft("One here. Two here.\n")
+        os.chmod(path, 0o640)
+        before = sorted(os.listdir(self.tmp))
+        self.assertEqual(self.run_set(path, "S2", "Deux.", "--write").returncode, 0)
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o640)
+        self.assertEqual(sorted(os.listdir(self.tmp)), before)
+
+    def test_a_text_that_starts_with_a_dash_goes_after_two_dashes(self):
+        path = self.draft("One here. Two here.\n")
+        r = self.run_set(path, "S2", "--write", "--", "--odd.")
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(self.read(path), b"One here. --odd.\n")
+
+    def test_help_lists_set_as_working(self):
+        r = subprocess.run([sys.executable, "-I", SCRIPT, "--help"], capture_output=True, text=True, env=self.env())
+        self.assertIn("set", r.stdout)
+        self.assertNotIn("planned: replace one sentence", r.stdout)
+        r = self.run_set("--help")
+        self.assertIn("--write", r.stdout)
+
+    def test_a_draft_given_by_a_relative_path_is_found(self):
+        self.draft("One here. Two here.\n")
+        r = self.run_set("draft.md", "S2", "Deux.", "--write", cwd=self.tmp)
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(self.read(os.path.join(self.tmp, "draft.md")), b"One here. Deux.\n")
+
+
+class TestSetTiming(ConfigCase):
+    def timed(self, text, sid, new):
+        path = self.write(text, "big.md")
+        for extra in ((), ("--write",)):
+            t = time.perf_counter()
+            r = subprocess.run([sys.executable, "-I", SCRIPT, "set", path, sid, new, *extra], capture_output=True, text=True, env={"HOME": self.tmp, "PATH": "/usr/bin:/bin"})
+            took = time.perf_counter() - t
+            self.assertEqual(r.returncode, 0, (sid, r.stderr[-300:]))
+            self.assertLess(took, 1.0, (text[:14], extra, took))
+
+    def test_many_short_lines_in_one_block(self):
+        self.timed("Yes.\n" * 52000, "S26000", "No.")
+
+    def test_many_sentences_on_one_long_line(self):
+        self.timed("Yes. " * 52000, "S26000", "No.")
+        self.timed("  " + "Yes. " * 52000, "S26000", "No.")
+
+    def test_one_huge_wrapped_sentence(self):
+        self.timed("word word word\n" * 17000, "S1", "Short.")
+
+    def test_a_huge_sentence_with_many_things_to_keep(self):
+        self.timed("see `a` 12 abc1234 " * 13000 + "\n", "S1", "see `a` 12 abc1234.")
+        big = "see `a` 12 abc1234 " * 13000
+        t = time.perf_counter()
+        furbish.set_sentence(big + "\n", "S1", "x " + big)
+        self.assertLess(time.perf_counter() - t, 1.0)
+
+    def test_hostile_lines(self):
+        for d in ("a" + "`" * 200000, "[a" * 100000, "[a](" * 60000, "<a " * 80000, "`a b " * 40000, "- a b c.\n" * 30000, "> a b c.\n" * 30000):
+            path = self.write(d + "\n\nTail here.\n", "hostile.md")
+            t = time.perf_counter()
+            r = subprocess.run([sys.executable, "-I", SCRIPT, "set", path, "S1", "New."], capture_output=True, text=True, env={"HOME": self.tmp, "PATH": "/usr/bin:/bin"})
+            self.assertLess(time.perf_counter() - t, 2.0, d[:14])
+            self.assertIn(r.returncode, (0, 1, 2), d[:14])
+            self.assertNotIn("Traceback", r.stderr, d[:14])
 
 
 if __name__ == "__main__":
