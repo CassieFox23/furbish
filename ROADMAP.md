@@ -13,10 +13,10 @@ What is planned, in order, and what is not coming. Finished work is in [CHANGELO
 ## Done
 
 - the repo base: docs, CI on Python 3.11 to 3.14, and a stub that answers `--help` and `--version`
+- the prose reader: `read_prose` skips code, comments, tables, `<details>` summaries and the footer, numbers every sentence (S1, S2, …) and grades each with the Automated Readability Index. No command shows it yet; `check` will
 
 ## Next: the core
 
-- **Reading prose out of a draft:** skip fenced code, inline code, tables, `<details>` summaries and the footer; number every sentence (S1, S2, …); grade each one with the Automated Readability Index
 - **Config:** the file and per-repo profiles described in [CONFIG.md](CONFIG.md), plus a `first_line_prefix` rule for repos that want posts to start a set way
 - **`check`:** the built-in rules (reading grade with `--post`, template lines exempt, commit shas in backticks, links in backticks, blank lines in `<details>`, SPDX licence ids, `@` mentions outside code, a TL;DR on long posts with its word threshold and sentence cap from config, the footer, banned phrases, private paths such as a home folder), printing only the problems
 - **Outside checkers:** `lines` mode (a command and a fail regex) and `json` mode (Vale first)

@@ -8,8 +8,8 @@ The whole program is one file, `furbish.py`. It uses the Python standard library
 
 | Part | Holds |
 |---|---|
-| `furbish.py` | the command line; today the argument parser, `--help` and `--version` |
-| `tests/` | offline unit tests, on made-up drafts only |
+| `furbish.py` | the command line (today the argument parser, `--help` and `--version`) and the prose reader, `read_prose` and `ari` |
+| `tests/` | offline unit tests, on made-up drafts only; the drafts are in `tests/drafts/` |
 | `data/` (planned) | word lists borrowed from proselint (BSD-3-Clause), write-good (MIT) and AI-tell phrase lists (MIT), each kept beside its upstream licence, with a NOTICE file |
 
 ## Rules
