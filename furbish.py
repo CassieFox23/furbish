@@ -614,7 +614,7 @@ _LABEL_RE = re.compile(r"^(\*\*|__)[^*_]{1,40}?(:(\*\*|__)|(\*\*|__):)\s*")
 _CODE_RE = re.compile(r"`[^`]*`")
 _BARE_URL_RE = re.compile(r"https?://\S+")
 _GRADE_HEADING_RE = re.compile(r"#{1,6}\s")
-_CHECKBOX_RE = re.compile(r"[-*+]\s+\[[ xX]\]")
+_CHECKBOX_RE = re.compile(r"(?:[-*+]|\d+[.)])\s+\[[ xX]\]")
 
 
 def _mask_code(line):
@@ -820,7 +820,7 @@ def _hard(lines, sentences, exempt):
     for s in sentences:
         skip = skipped.get(s.line)
         if skip is None:
-            src = lines[s.line - 1].strip()
+            src = lines[s.line - 1].removeprefix("\ufeff").strip()
             skip = skipped[s.line] = src in exempt or bool(_GRADE_HEADING_RE.match(src) or _CHECKBOX_RE.match(src))
         if skip:
             continue
@@ -1143,7 +1143,7 @@ def _merge(ranges):
 def _brackets(text):
     out = []
     stack = []
-    for m in re.finditer(r"[\[\]]", text):
+    for m in re.finditer(r"(?<!\\)[\[\]]", _edit(text, _code_spans(text), lambda t: "\x01" * len(t))):
         if m.group() == "[":
             stack.append(m.start())
         elif stack:
@@ -1360,33 +1360,45 @@ def _hunks(old, new, tags, context=1):
 
 
 _BREAK = re.compile(r"; +| [\u2014\u2013-] +|, +(?=(?:and|but|so|or|yet) )")
-_STARS = re.compile(r"\*+")
+_MARKUP = re.compile(r"[()]|\*+")
+_ENTITY = re.compile(r"&#?\w+$")
+_PLAIN_WORD = re.compile(r"[a-z]+(?![\w./:@-])")
 _SPLIT_MAX = 2000
-_SPLIT_TRIES = 30
+_SPLIT_TRIES = 6
 Suggestion = namedtuple("Suggestion", "line sid grade first second grades")
 
 
 def _breaks(text):
     s = _shield(text)
+    if '"' in s or "\u201c" in s or "\u201d" in s:
+        return []
     end = len(text.rstrip())
+    events = [(m.start(), m.group()[0]) for m in _MARKUP.finditer(s)]
     out = []
-    pos = opens = closes = stars = 0
+    k = depth = stars = 0
     lead = False
+    pos = 0
     for m in _BREAK.finditer(s):
         a, b = m.span()
-        opens += text.count("(", pos, a)
-        closes += text.count(")", pos, a)
-        stars += len(_STARS.findall(text, pos, a))
+        while k < len(events) and events[k][0] < a:
+            c = events[k][1]
+            if c == "(":
+                depth += 1
+            elif c == ")":
+                depth = max(0, depth - 1)
+            else:
+                stars += 1
+            k += 1
         lead = lead or bool(text[pos:a].strip())
         pos = a
-        if lead and b < end and opens == closes and stars % 2 == 0:
+        if lead and b < end and depth == 0 and stars % 2 == 0 and not (text[a] == ";" and _ENTITY.search(text, max(0, a - 12), a)):
             out.append((a, b))
     return out
 
 
 def _half(text):
     cleaned = _cleaned(text)
-    return ari(cleaned) if len(cleaned.split()) >= 3 else None
+    return ari(cleaned) if _count(cleaned)[0] >= 3 else None
 
 
 def split_suggestions(text, profile=None, exempt=frozenset()):
@@ -1407,9 +1419,9 @@ def split_suggestions(text, profile=None, exempt=frozenset()):
                 best = (a, b, (gl, gr))
         if best:
             a, b, grades = best
-            first = s.text[:a].rstrip(" ,;:\u2014\u2013-") + "."
+            first = s.text[:a].rstrip(" ,;:")
             right = s.text[b:]
-            out.append(Suggestion(s.line, s.id, grade, first, right[:1].upper() + right[1:] if right[:1].isalpha() else right, grades))
+            out.append(Suggestion(s.line, s.id, grade, first if first.endswith((".", "!", "?", "\u2026")) else first + ".", right[:1].upper() + right[1:] if _PLAIN_WORD.match(right) else right, grades))
     return out
 
 
@@ -1430,7 +1442,7 @@ def _template_lines(profile):
     for key in ("pr_template", "issue_template"):
         path = profile.get(key) if profile else None
         if path:
-            lines.update(l.strip() for l in _read_text(path).splitlines() if l.strip())
+            lines.update(l.strip() for l in _read_text(path).removeprefix("\ufeff").replace("\r\n", "\n").split("\n") if l.strip())
     return frozenset(lines)
 
 

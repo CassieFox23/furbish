@@ -2289,6 +2289,106 @@ class TestSplitSuggestions(unittest.TestCase):
                 self.assertLess(time.perf_counter() - t, 2.0, d[:14])
 
 
+class TestSplitReviewFixes(unittest.TestCase):
+    A = "Several different sentences should remain readable under every possible circumstance"
+    B = "because nobody wants complicated paragraphs without obvious breaking points anywhere"
+    R = "these tiny planes hold about eight small cakes while those large crews bake fresh bread under every green hill"
+
+    def found(self, text):
+        return sg(text + "\n")
+
+    def test_the_worst_case_of_many_marks_in_many_long_sentences_stays_fast(self):
+        part = (("`c` [l](u) ; " * 200)[:1999].rstrip(" ;-,") + ". ")
+        big = (part * 200)[:260000]
+        t = time.perf_counter()
+        sg(big)
+        self.assertLess(time.perf_counter() - t, 2.0)
+
+    def test_a_cut_is_never_made_inside_an_open_bracket_or_emphasis(self):
+        self.assertEqual(self.found(self.A.replace("remain ", "remain (readable ") + "; " + self.B + ")."), [])
+        self.assertEqual(self.found("*Several different sentences should remain readable under every possible circumstance; " + self.B + "*."), [])
+        self.assertEqual(self.found("*Several different `a*b` sentences should remain readable under every possible circumstance; " + self.B + "*."), [])
+
+    def test_brackets_and_stars_in_code_urls_and_a_stray_close_do_not_block_a_cut(self):
+        b = furbish._breaks
+        self.assertEqual(len(b(self.A + " :) ; " + self.B + ".")), 1)
+        self.assertEqual(len(b("1) " + self.A + "; " + self.B + ".")), 1)
+        self.assertEqual(len(b("Use `(` here; " + self.B + ".")), 1)
+        self.assertEqual(len(b("Use `a*b` here; " + self.B + ".")), 1)
+        self.assertEqual(len(b("Use https://x.io/a*b here; " + self.B + ".")), 1)
+        self.assertEqual(len(b("Use [a (b](http://x.io/(c) here; " + self.B + ".")), 1)
+
+    def test_a_quote_that_runs_over_sentences_is_never_cut(self):
+        self.assertEqual(self.found('The log says "' + self.A + "; " + self.B + '. Done."'), [])
+        self.assertEqual(self.found(self.A + "; " + self.B + '." Then it stopped.'), [])
+        self.assertEqual(self.found("The log says \u201c" + self.A + "; " + self.B + ". Done.\u201d"), [])
+        self.assertEqual(len(self.found(self.A + "; " + self.B + ' "ok".')), 1)
+
+    def test_a_link_with_a_closing_bracket_inside_is_never_torn(self):
+        for inner in ("\\]", "`]`", "\\["):
+            self.assertEqual(self.found(f"See [Several different sentences should remain readable {inner} under every possible circumstance; " + self.B + "](http://x.io/page)."), [], inner)
+        self.assertEqual(furbish._brackets("a [b \\] c](u) d"), [(2, 10)])
+        self.assertEqual(furbish._brackets("a [b `]` c](u) d"), [(2, 11)])
+
+    def test_a_second_half_that_starts_with_a_url_or_name_keeps_its_case(self):
+        for first in ("https://example.com/x/y.md", "www.example.com", "example.com/x", "readme.md", "a_b", "x@y.io", "co-op"):
+            x = sg(self.A + "; " + first + " " + self.B + ".\n")
+            self.assertEqual(len(x), 1, first)
+            self.assertTrue(x[0].second.startswith(first), (first, x[0].second))
+        x = sg(self.A + "; " + self.B + ".\n")
+        self.assertTrue(x[0].second.startswith("Because"))
+
+    def test_the_grades_shown_are_the_grades_of_the_sentences_shown(self):
+        for mid in ("; ", " - ", ", but ", "; https://github.com/example/project/blob/main/documentation/architecture/overview.md "):
+            for x in sg(self.A + mid + self.B + ".\n"):
+                self.assertAlmostEqual(furbish.ari(furbish._cleaned(x.first)), x.grades[0], places=6)
+                self.assertAlmostEqual(furbish.ari(furbish._cleaned(x.second)), x.grades[1], places=6)
+
+    def test_the_first_half_never_ends_in_two_full_stops(self):
+        for tail in (" etc.", " e.g.", "!", "?", " ...", " \u2026"):
+            x = sg(self.A + tail + ", but " + self.B + ".\n")
+            self.assertEqual(len(x), 1, tail)
+            self.assertFalse(x[0].first.endswith(".."), x[0].first) if not tail.endswith("...") else None
+            self.assertEqual(x[0].first.count(". ."), 0)
+        self.assertTrue(sg(self.A + " etc., but " + self.B + ".\n")[0].first.endswith("etc."))
+
+    def test_the_first_half_keeps_a_hyphen_or_colon_that_belongs_to_its_last_word(self):
+        x = sg(self.A + " see https://example.com/my-page-; " + self.B + ".\n")
+        self.assertTrue(x[0].first.endswith("my-page-."), x[0].first)
+
+    def test_an_html_entity_is_not_a_mark(self):
+        self.assertEqual(furbish._breaks("A &amp; B &#38; C &lt; D."), [])
+        self.assertEqual(furbish._breaks("A &nbsp; B."), [])
+        self.assertEqual(len(furbish._breaks("A &amp; B; C.")), 1)
+        self.assertEqual(self.found(self.A + " &amp; " + self.B + " &amp; " + self.B + "."), [])
+
+    def test_a_half_needs_three_real_words(self):
+        self.assertEqual(self.found("Banana mangoes ...; " + self.R + "."), [])
+        self.assertEqual(self.found("Great news \U0001F389; " + self.R + "."), [])
+        self.assertIsNone(furbish._half("Banana mangoes ..."))
+        self.assertIsNotNone(furbish._half("Banana mangoes taste great"))
+
+    def test_the_exemptions_know_a_bom_ordered_checkboxes_and_odd_line_breaks_in_templates(self):
+        hard = self.A + "; " + self.B + "."
+        for d in ("\ufeff# " + hard, "\ufeff- [ ] " + hard, "1. [ ] " + hard, "1) [x] " + hard, "10. [ ] " + hard):
+            self.assertEqual(sg(d + "\n"), [], d)
+            self.assertEqual([p for p in furbish.check(d + "\n", None, True) if p.rule == "grade"], [], d)
+        self.assertEqual(len(sg("1. " + hard + "\n")), 1)
+
+
+class TestTemplateLines(ConfigCase):
+    def lines(self, body):
+        path = self.write(body, "tpl.md")
+        return furbish._template_lines({"pr_template": path})
+
+    def test_a_template_is_read_line_by_line_on_newlines_only(self):
+        got = self.lines("A line\u2028with a break.\x0bAnd more.\x85Even more.\nNext line.\r\nThird.\n")
+        self.assertEqual(got, frozenset({"A line\u2028with a break.\x0bAnd more.\x85Even more.", "Next line.", "Third."}))
+
+    def test_a_template_with_a_byte_order_mark_still_matches_its_first_line(self):
+        self.assertIn("First line.", self.lines("\ufeffFirst line.\nSecond.\n"))
+
+
 class TestSplitCli(ConfigCase):
     HARD = f"{SPLIT_A}, and {SPLIT_B}"
 
