@@ -85,7 +85,7 @@ python3 furbish.py set draft.md S2 "It took 12 seconds." --write
 +It took 12 seconds.
 ```
 
-The new text must be one plain line: no tabs, hidden characters or comments. A sentence that wraps over several lines becomes one line, and `set` refuses a sentence it can't change without losing something in front of it, such as a list marker. With `--write` it also refuses a read-only draft and a draft with more than one name (a hard link), and a draft that is a symlink is changed where the link points. A refusal prints one line per reason, like `draft.md:3: S2: the new sentence drops the number 12`, and writes nothing. If the new text starts with a dash, put `--` before it.
+The new text must be one plain line: no tabs, hidden characters or comments. A sentence that wraps over several lines becomes one line, and `set` refuses a sentence it can't change without losing something in front of it, such as a list marker. With `--write` it also refuses a read-only draft and a draft with more than one name (a hard link), and a draft that is a symlink is changed where the link points. A refusal prints one line per reason, like `draft.md:3: S2: the new sentence drops the number 12`, and writes nothing. If the new text starts with a dash, put `--` before it, and put any option such as `--write` before the `--`: `furbish set draft.md S2 --write -- "-odd one."`.
 
 ## Help
 

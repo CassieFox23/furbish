@@ -4,7 +4,7 @@ from collections import namedtuple
 
 __version__ = "0.1.0.dev0"
 
-Sentence = namedtuple("Sentence", "id line text grade")
+Sentence = namedtuple("Sentence", "id line text")
 Located = namedtuple("Located", "sentence where kind level heading under span")
 
 _URL = re.compile(r"https?://\S*[^\s.,;:!?)\]\"']")
@@ -16,6 +16,7 @@ _EMPTY_ITEM = re.compile(r"\s*(?:[-*+]|\d+[.)])[ \t]*")
 _TASK = re.compile(r"\[[ xX]\][ \t]+")
 _THEMATIC = re.compile(r" {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*")
 _UNDERLINE = re.compile(r" {0,3}(?:=+|-+)[ \t]*")
+_TABLE_DELIM = re.compile(r"\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?")
 _REFDEF = re.compile(r" {0,3}\[(?!\^)[^\]]+\]:[ \t]*\S")
 _SPACES = re.compile(r"\s+")
 _STOPS = re.compile(r"[.!?]")
@@ -86,12 +87,43 @@ def _comments(line):
     return "".join(pieces), False
 
 
+class _IndentedCode:
+    def __init__(self):
+        self.prev = None
+        self.blank = True
+        self.code = False
+
+    def step(self, line):
+        stripped = line.strip()
+        if not stripped:
+            self.blank = True
+            return self.code
+        indent = 4 if line.startswith("\t") else len(line) - len(line.lstrip(" "))
+        if self.code:
+            if indent >= 4:
+                self.blank = False
+                return True
+            self.code = False
+        if self.blank and indent >= 4 and self.prev != "list":
+            self.code = True
+            self.blank = False
+            return True
+        self.blank = False
+        if _LIST.match(line):
+            self.prev = "list"
+        elif indent == 0:
+            self.prev = "quote" if stripped[0] == ">" else "text"
+        return False
+
+
 def _blocks(lines, footer):
     blocks = []
     cur = None
     fence = None
     comment = False
     summary = False
+    table = False
+    icode = _IndentedCode()
     for no, line in enumerate(lines, 1):
         base = 0
         if no == 1 and line.startswith("\ufeff"):
@@ -123,6 +155,9 @@ def _blocks(lines, footer):
             fence = fo
             cur = None
             continue
+        if icode.step(line):
+            cur = None
+            continue
         whole = line
         line, comment = _comments(line)
         shift = base if line == whole else None
@@ -133,9 +168,27 @@ def _blocks(lines, footer):
             cur = None
             continue
         stripped = line.strip()
-        if not stripped or stripped[0] == "|" or _HTML_ONLY.fullmatch(stripped):
+        if not stripped:
+            cur = None
+            table = False
+            continue
+        if "|" in stripped and _TABLE_DELIM.fullmatch(stripped):
+            if cur is not None and cur[0] == "para" and "|" in cur[1][-1][1]:
+                cur[1].pop()
+                if not cur[1]:
+                    blocks.pop()
+            cur = None
+            table = True
+            continue
+        if stripped[0] == "|" or _HTML_ONLY.fullmatch(stripped):
             cur = None
             continue
+        if table:
+            if _HEADING.match(line) or stripped[0] == ">" or _LIST.match(line):
+                table = False
+            else:
+                cur = None
+                continue
         c0 = stripped[0]
         if c0 in "=-" and cur is not None and cur[0] == "para" and _UNDERLINE.fullmatch(line):
             cur[0] = "heading"
@@ -233,6 +286,14 @@ def _mask(text):
     return _URL.sub(lambda m: _hide(m.group(0)), text)
 
 
+_ID_START = re.compile(r"https?://|[0-9a-f]{7,40}(?![0-9A-Za-z])")
+
+
+def _starts_id(text, k):
+    m = _ID_START.match(text, k)
+    return bool(m) and (m.group().startswith("http") or not m.group().isalpha())
+
+
 def _split(text, masked):
     spans = []
     start = 0
@@ -247,7 +308,7 @@ def _split(text, masked):
         k = j
         while k < n and masked[k].isspace():
             k += 1
-        if k < n and text[k].islower():
+        if k < n and text[k].islower() and not _starts_id(text, k):
             continue
         s = i
         while s > 0 and not masked[s - 1].isspace():
@@ -294,6 +355,7 @@ def _prose(text):
     t = _unlink(t)
     t = _strip_tags(t)
     t = _URL.sub("", t)
+    t = _edit(t, _sha_spans(t), lambda x: "")
     t = t.replace("*", "").replace("~~", "")
     return _SPACES.sub(" ", t).strip()
 
@@ -329,9 +391,7 @@ def _sentences(lines, footer):
             s = seg.strip()
             if not s:
                 continue
-            prose = _prose(s)
-            words, chars = _count(prose)
-            if words == 0:
+            if _count(_prose(s))[0] == 0:
                 continue
             sa = a + len(seg) - len(seg.lstrip())
             sb = sa + len(s)
@@ -344,8 +404,8 @@ def _sentences(lines, footer):
                     if nos[k] != nos[k - 1] + 1 or lines[nos[k] - 1][:cols[k]].strip(" \t>"):
                         where = None
                         break
-            out.append((s, nos[i], _grade(words, chars), where, kind, level, joined if kind == "heading" else None, under, (sa, sb)))
-    return [Located(Sentence(f"S{i}", line, s, g), where, kind, level, head, under, span) for i, (s, line, g, where, kind, level, head, under, span) in enumerate(out, 1)]
+            out.append((s, nos[i], where, kind, level, joined if kind == "heading" else None, under, (sa, sb)))
+    return [Located(Sentence(f"S{i}", line, s), where, kind, level, head, under, span) for i, (s, line, where, kind, level, head, under, span) in enumerate(out, 1)]
 
 
 def read_prose(text, footer=None):
@@ -603,7 +663,7 @@ def pick_profile(config, repo):
 
 Problem = namedtuple("Problem", "line sid rule message")
 
-_MENTION = re.compile(r"(^|[\s(])@[A-Za-z0-9][A-Za-z0-9-]*")
+_MENTION = re.compile(r"(?<!\w)@[A-Za-z0-9][A-Za-z0-9-]*")
 _SPDX_PATTERNS = (
     re.compile(r"\b[AL]?GPL ?v?\d(?:\.\d)?\+?(?![\w-]|\.\d)"),
     re.compile(r"\bApache(?: License)?,? (?:v|version )?2(?:\.0)?\b"),
@@ -611,9 +671,7 @@ _SPDX_PATTERNS = (
 )
 _SHA_RE = re.compile(r"[0-9a-f]{7,40}")
 _LABEL_RE = re.compile(r"^(\*\*|__)[^*_]{1,40}?(:(\*\*|__)|(\*\*|__):)\s*")
-_CODE_RE = re.compile(r"`[^`]*`")
 _BARE_URL_RE = re.compile(r"https?://\S+")
-_GRADE_HEADING_RE = re.compile(r"#{1,6}\s")
 _CHECKBOX_RE = re.compile(r"(?:[-*+]|\d+[.)])\s+\[[ xX]\]")
 
 
@@ -624,6 +682,7 @@ def _mask_code(line):
 def _outside_code(lines):
     fence = None
     comment = False
+    icode = _IndentedCode()
     for no, line in enumerate(lines, 1):
         if no == 1:
             line = line.removeprefix("\ufeff")
@@ -640,6 +699,8 @@ def _outside_code(lines):
         fo = _fence_open(line)
         if fo:
             fence = fo
+            continue
+        if icode.step(line):
             continue
         if "<!--" in line:
             line, comment = _comments(line)
@@ -664,7 +725,7 @@ def _fold_lines(outside):
     folds = set()
     depth = 0
     for no, line in outside:
-        low = line.lower()
+        low = _mask_code(line).lower()
         if "<details" in low:
             depth += 1
         if depth:
@@ -693,10 +754,10 @@ def _rule_tldr(lines, outside, sentences, p):
     no = i + 1
     first = lines[i].lstrip()
     if prefix and first.startswith(prefix):
-        first = first[len(prefix):]
+        first = first[len(prefix):].lstrip()
     if first.startswith("**TL;DR:**"):
         end = i
-        while end < len(lines) and lines[end].strip():
+        while end < len(lines) and lines[end].strip() and (end == i or not _HEADING.match(lines[end])):
             end += 1
         if cap is None:
             return []
@@ -767,14 +828,22 @@ def _rule_code_spans(outside):
     return out
 
 
+def _mask_links(line):
+    line = _mask_code(line)
+    ends = {e: s for s, e in _brackets(line)}
+    ranges = [m.span() for m in _URL.finditer(line)]
+    for start, end in _target_spans(line):
+        ranges.append((ends.get(start, start), end))
+    return _edit(line, _merge(ranges), _hide)
+
+
 def _rule_mentions(outside):
     out = []
     for no, line in outside:
         if "@" not in line:
             continue
-        for m in _MENTION.finditer(_mask_code(line)):
-            handle = m.group(0)[m.group(0).index("@"):]
-            out.append(Problem(no, "", "mention", f"{handle} is an @ mention, which pings that person"))
+        for m in _MENTION.finditer(_mask_links(line)):
+            out.append(Problem(no, "", "mention", f"{m.group()} is an @ mention, which pings that person"))
     return out
 
 
@@ -786,7 +855,9 @@ def _rule_spdx(outside):
         masked = _mask_code(line)
         for pat in _SPDX_PATTERNS:
             for m in pat.finditer(masked):
-                out.append(Problem(no, "", "spdx", f"{m.group(0)} is an informal licence name; use the SPDX licence id, for example GPL-2.0-only"))
+                name = m.group(0)
+                example = "Apache-2.0" if name.startswith("Apache") else f"BSD-{name[4]}-Clause" if name.startswith("BSD") else "GPL-2.0-only"
+                out.append(Problem(no, "", "spdx", f"{name} is an informal licence name; use the SPDX licence id, for example {example}"))
     return out
 
 
@@ -804,25 +875,26 @@ def _details_gaps(lines, outside):
 
 
 def _rule_details(lines, outside):
-    return [Problem(no, "", "details-blank", f"a blank line is needed {side} {'</summary>' if side == 'after' else '</details>'} or the text inside will not display") for no, side in _details_gaps(lines, outside)]
+    return [Problem(no, "", "details-blank", f"a blank line is needed {side} {'</summary>' if side == 'after' else '</details>'} or the text inside will not be formatted") for no, side in _details_gaps(lines, outside)]
 
 
 def _cleaned(text):
     cleaned = _LABEL_RE.sub("", text)
-    cleaned = _CODE_RE.sub("code", cleaned)
-    cleaned = _unlink(cleaned)
+    cleaned = _edit(cleaned, _code_spans(cleaned), lambda t: "code")
+    cleaned = _strip_tags(_unlink(cleaned))
     cleaned = _BARE_URL_RE.sub("link", cleaned)
     return cleaned.replace("*", "").replace("~~", "")
 
 
-def _hard(lines, sentences, exempt):
+def _hard(lines, located, exempt):
     skipped = {}
-    for s in sentences:
+    for x in located:
+        s = x.sentence
         skip = skipped.get(s.line)
         if skip is None:
             src = lines[s.line - 1].removeprefix("\ufeff").strip()
-            skip = skipped[s.line] = src in exempt or bool(_GRADE_HEADING_RE.match(src) or _CHECKBOX_RE.match(src))
-        if skip:
+            skip = skipped[s.line] = src in exempt or bool(_CHECKBOX_RE.match(src))
+        if skip or x.kind == "heading":
             continue
         cleaned = _cleaned(s.text)
         if len(cleaned.split()) < 3:
@@ -832,17 +904,19 @@ def _hard(lines, sentences, exempt):
             yield s, grade
 
 
-def _rule_grade(lines, sentences, exempt):
-    return [Problem(s.line, s.id, "grade", f"the reading grade is {round(grade)}, which is too hard; every sentence should be under grade 10") for s, grade in _hard(lines, sentences, exempt)]
+def _rule_grade(lines, located, exempt):
+    return [Problem(s.line, s.id, "grade", f"the reading grade is {round(grade)}, which is too hard; every sentence should be under grade 10") for s, grade in _hard(lines, located, exempt)]
 
 
 def check(text, profile=None, post=False, exempt=frozenset()):
     p = profile or {}
     lines = text.replace("\r\n", "\n").split("\n")
+    lines[0] = lines[0].removeprefix("\ufeff")
     footer = p.get("footer")
     outside = list(_outside_code(lines))
     need = post or p.get("tldr") == "required" or bool(p.get("banned"))
-    sentences = read_prose(text, footer) if need else []
+    located = _sentences(lines, footer) if need else []
+    sentences = [x.sentence for x in located]
     problems = []
     problems += _rule_prefix(lines, p.get("first_line_prefix"))
     if p.get("tldr") == "required":
@@ -855,7 +929,7 @@ def check(text, profile=None, post=False, exempt=frozenset()):
     problems += _rule_spdx(outside)
     problems += _rule_details(lines, outside)
     if post:
-        problems += _rule_grade(lines, sentences, exempt)
+        problems += _rule_grade(lines, located, exempt)
     problems.sort(key=lambda q: q.line)
     return problems
 
@@ -1326,8 +1400,12 @@ def fix_text(text, profile=None, exempt=frozenset()):
     return Fixed(joined, lines, new, tags)
 
 
+_NO_NEWLINE = "\\ No newline at end of file"
+
+
 def _hunks(old, new, tags, context=1):
     last = len(new) - 1 if new and new[-1] == "" and tags[-1][0] == "=" else len(new)
+    no_newline = last == len(new)
     spans = []
     for k in range(last):
         if tags[k][0] != "=":
@@ -1349,18 +1427,21 @@ def _hunks(old, new, tags, context=1):
             if tag == "=":
                 body += ["-" + _plain(x) for x in gone] + ["+" + _plain(x) for x in came] + [" " + _plain(new[k])]
                 gone, came = [], []
+                if no_newline and k == last - 1:
+                    body.append(_NO_NEWLINE)
                 continue
             if tag == "~":
                 gone.append(old[oi])
             came.append(new[k])
-        body += ["-" + _plain(x) for x in gone] + ["+" + _plain(x) for x in came]
+        tail = [_NO_NEWLINE] if no_newline and b == last else []
+        body += ["-" + _plain(x) for x in gone] + (tail if gone else []) + ["+" + _plain(x) for x in came] + (tail if came else [])
         out.append(f"@@ -{before + 1 if count else before},{count} +{a + 1},{b - a} @@")
         out += body
     return out
 
 
 _BREAK = re.compile(r"; +| [\u2014\u2013-] +|, +(?=(?:and|but|so|or|yet) )")
-_MARKUP = re.compile(r"[()]|\*+")
+_MARKUP = re.compile(r"[()]|\*+|~~|(?<!\w)_+(?=\S)|(?<=\S)_+(?!\w)")
 _ENTITY = re.compile(r"&#?\w+$")
 _PLAIN_WORD = re.compile(r"[a-z]+(?![\w./:@-])")
 _SPLIT_MAX = 2000
@@ -1375,7 +1456,8 @@ def _breaks(text):
     end = len(text.rstrip())
     events = [(m.start(), m.group()[0]) for m in _MARKUP.finditer(s)]
     out = []
-    k = depth = stars = 0
+    k = depth = 0
+    runs = {"*": 0, "~": 0, "_": 0}
     lead = False
     pos = 0
     for m in _BREAK.finditer(s):
@@ -1387,11 +1469,11 @@ def _breaks(text):
             elif c == ")":
                 depth = max(0, depth - 1)
             else:
-                stars += 1
+                runs[c] += 1
             k += 1
         lead = lead or bool(text[pos:a].strip())
         pos = a
-        if lead and b < end and depth == 0 and stars % 2 == 0 and not (text[a] == ";" and _ENTITY.search(text, max(0, a - 12), a)):
+        if lead and b < end and depth == 0 and all(v % 2 == 0 for v in runs.values()) and not (text[a] == ";" and _ENTITY.search(text, max(0, a - 12), a)):
             out.append((a, b))
     return out
 
@@ -1405,14 +1487,17 @@ def split_suggestions(text, profile=None, exempt=frozenset()):
     p = profile or {}
     lines = text.replace("\r\n", "\n").split("\n")
     out = []
-    for s, grade in _hard(lines, read_prose(text, p.get("footer")), exempt):
+    for s, grade in _hard(lines, _sentences(lines, p.get("footer")), exempt):
         if len(s.text) > _SPLIT_MAX:
             continue
         middle = len(s.text) / 2
         marks = sorted(_breaks(s.text), key=lambda m: abs(m[0] - middle))[:_SPLIT_TRIES]
         best = None
         for a, b in marks:
-            gl, gr = _half(s.text[:a]), _half(s.text[b:])
+            right = s.text[b:]
+            if right[:1].islower() and not _PLAIN_WORD.match(right) and not _starts_id(right, 0):
+                continue
+            gl, gr = _half(s.text[:a]), _half(right)
             if gl is None or gr is None or round(gl) >= round(grade) or round(gr) >= round(grade):
                 continue
             if best is None or max(gl, gr) < max(best[2]):
@@ -1442,7 +1527,11 @@ def _template_lines(profile):
     for key in ("pr_template", "issue_template"):
         path = profile.get(key) if profile else None
         if path:
-            lines.update(l.strip() for l in _read_text(path).removeprefix("\ufeff").replace("\r\n", "\n").split("\n") if l.strip())
+            try:
+                body = _read_text(path)
+            except ConfigError as e:
+                raise ConfigError(f"{key} in the config: {e}") from None
+            lines.update(l.strip() for l in body.removeprefix("\ufeff").replace("\r\n", "\n").split("\n") if l.strip())
     return frozenset(lines)
 
 
@@ -1523,9 +1612,14 @@ def _run_set(args):
         print("furbish: that sentence already reads that way, so nothing changed", file=sys.stderr)
         return 0
     print(f"--- {shown}\n+++ {shown}\n@@ -{edit.first},{len(edit.old)} +{edit.first},1 @@")
+    unterminated = not text.endswith("\n") and edit.first + len(edit.old) - 1 == text.count("\n") + 1
     for l in edit.old:
         print("-" + _plain(l))
+    if unterminated:
+        print(_NO_NEWLINE)
     print("+" + _plain(edit.new))
+    if unterminated:
+        print(_NO_NEWLINE)
     if not args.write:
         print("furbish: nothing was written; add --write to change the file", file=sys.stderr)
     return 0
@@ -1589,7 +1683,7 @@ def main():
     st = sub.add_parser("set", help="replace one sentence by its id", description="Replaces one sentence of a draft, found by the id that furbish check prints (S12). The new sentence must keep every number, commit sha and inline-code span of the old one, and under a heading from keep_negation it must keep its negation. Prints the change as a diff, and writes the file only with --write. Exits 0 on success, 1 when the new sentence is refused and 2 when it cannot run.")
     st.add_argument("draft", help="the draft file to change")
     st.add_argument("sid", metavar="ID", help="the sentence id, for example S12")
-    st.add_argument("text", help="the new sentence, as one line; put -- before it if it starts with a dash")
+    st.add_argument("text", help="the new sentence, as one line; if it starts with a dash, put -- before it, and put any option such as --write before the --")
     st.add_argument("--repo", metavar="OWNER/NAME", help="the repo profile from the config file to use; without it, default_repo is used")
     st.add_argument("--write", action="store_true", help="change the file; without it nothing is written")
     fi = sub.add_parser("fix", help="make the safe mechanical edits to a draft", description="Makes the safe mechanical edits to the prose of a draft: takes the backticks off a lone commit sha or URL, puts a blank line inside <details> where GitHub needs one, and, if the repo profile has code_names, turns quoted test names, CI check names and CI states into inline code. It never touches code blocks, comments, tables, quotes, link text, headings, checkboxes, template lines or the footer. Prints the changes as a diff, and writes the file only with --write. Exits 0 when it is done (and prints nothing when there is nothing to fix), 1 when it refuses to change a draft and 2 when it cannot run.")

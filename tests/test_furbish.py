@@ -1,4 +1,4 @@
-import importlib.util, json, os, re, shlex, subprocess, sys, tempfile, time, unittest
+import importlib.util, json, os, re, shlex, shutil, subprocess, sys, tempfile, time, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(HERE, "..", "furbish.py")
@@ -65,8 +65,8 @@ class TestReadProse(unittest.TestCase):
     def test_inline_code_stays_in_text_but_not_in_grade(self):
         s = furbish.read_prose("Run `make test` before you push. The `--flag` option is new.")
         self.assertEqual([x.text for x in s], ["Run `make test` before you push.", "The `--flag` option is new."])
-        self.assertAlmostEqual(s[0].grade, furbish.ari("Run before you push."), places=6)
-        self.assertAlmostEqual(s[1].grade, furbish.ari("The option is new."), places=6)
+        self.assertEqual(furbish._cleaned(s[0].text), "Run code before you push.")
+        self.assertEqual(furbish._cleaned(s[1].text), "The code option is new.")
 
     def test_sentence_of_only_inline_code_is_not_numbered(self):
         s = furbish.read_prose("- `make test`\n- Real sentence.\n")
@@ -103,8 +103,8 @@ class TestReadProse(unittest.TestCase):
     def test_link_url_and_bare_url_are_not_graded(self):
         s = furbish.read_prose("See [the guide](https://example.com/guide) for details. Visit https://example.com/a/b now.")
         self.assertEqual(s[0].text, "See [the guide](https://example.com/guide) for details.")
-        self.assertAlmostEqual(s[0].grade, furbish.ari("See the guide for details."), places=6)
-        self.assertAlmostEqual(s[1].grade, furbish.ari("Visit now."), places=6)
+        self.assertEqual(furbish._cleaned(s[0].text), "See the guide for details.")
+        self.assertEqual(furbish._cleaned(s[1].text), "Visit link now.")
 
     def test_html_comments_are_skipped_even_when_they_wrap(self):
         d = "Keep.\n\n<!-- hidden. text -->\n\n<!--\nalso hidden. text\n-->\n\nAlso keep.\n"
@@ -133,8 +133,8 @@ class TestReadProse(unittest.TestCase):
 
     def test_a_less_than_sign_is_not_a_tag_unless_a_tag_follows(self):
         s = furbish.read_prose("if a < b and b > c then stop. A <b>bold</b> move.")
-        self.assertAlmostEqual(s[0].grade, -7.42125, places=4)
-        self.assertAlmostEqual(s[1].grade, furbish.ari("A bold move."), places=6)
+        self.assertEqual(furbish._cleaned(s[0].text), "if a < b and b > c then stop.")
+        self.assertEqual(furbish._cleaned(s[1].text), "A bold move.")
 
     def test_crlf_line_endings(self):
         s = furbish.read_prose("Main one.\r\n\r\nNext one.\r\n\r\n-- Sent from the made-up example footer\r\n", FOOTER)
@@ -183,7 +183,7 @@ class TestMadeUpDrafts(unittest.TestCase):
         self.assertIn("The automated build process completed successfully after the third retry attempt.", t)
         self.assertNotIn("CANARY_CODE long log", t)
         p = next(x for x in s if x.text.startswith("Please review"))
-        self.assertAlmostEqual(p.grade, furbish.ari("Please review the variable usage in the test scripts before deploying."), places=6)
+        self.assertEqual(furbish._cleaned(p.text), "Please review the code variable usage in the test scripts before deploying.")
 
     def test_issue_body(self):
         s = self.check_draft("issue-body.md")
@@ -1659,7 +1659,7 @@ class TestSetReviewFixes(unittest.TestCase):
         for d in ("  ## Hi there", "   # Hi there", "\ufeff## Hi there", "Hi there\n===", "Hi there\n---"):
             found = furbish._sentences(d.split("\n"), None)
             self.assertEqual([(x.sentence.text, x.kind) for x in found], [("Hi there", "heading")], d)
-        self.assertEqual(furbish._sentences("    ## Hi there".split("\n"), None)[0].kind, "para")
+        self.assertEqual(furbish._sentences("    ## Hi there".split("\n"), None), [])
         self.assertEqual(furbish._sentences(["Hi there", "", "---"], None)[0].kind, "para")
 
     def test_each_sentence_knows_the_headings_over_it(self):
@@ -2330,11 +2330,13 @@ class TestSplitReviewFixes(unittest.TestCase):
         self.assertEqual(furbish._brackets("a [b \\] c](u) d"), [(2, 10)])
         self.assertEqual(furbish._brackets("a [b `]` c](u) d"), [(2, 11)])
 
-    def test_a_second_half_that_starts_with_a_url_or_name_keeps_its_case(self):
-        for first in ("https://example.com/x/y.md", "www.example.com", "example.com/x", "readme.md", "a_b", "x@y.io", "co-op"):
+    def test_a_second_half_that_starts_with_a_url_keeps_its_case_and_one_that_starts_with_a_name_is_not_offered(self):
+        for first in ("https://example.com/x/y.md", "http://example.com"):
             x = sg(self.A + "; " + first + " " + self.B + ".\n")
             self.assertEqual(len(x), 1, first)
             self.assertTrue(x[0].second.startswith(first), (first, x[0].second))
+        for first in ("www.example.com", "example.com/x", "readme.md", "a_b", "x@y.io", "co-op"):
+            self.assertEqual(sg(self.A + "; " + first + " " + self.B + ".\n"), [], first)
         x = sg(self.A + "; " + self.B + ".\n")
         self.assertTrue(x[0].second.startswith("Because"))
 
@@ -2387,6 +2389,154 @@ class TestTemplateLines(ConfigCase):
 
     def test_a_template_with_a_byte_order_mark_still_matches_its_first_line(self):
         self.assertIn("First line.", self.lines("\ufeffFirst line.\nSecond.\n"))
+
+
+FA = "Several different sentences should remain readable under every possible circumstance"
+FB = "because nobody wants complicated paragraphs without obvious breaking points anywhere"
+
+
+class TestFableReview(ConfigCase):
+    def test_a_table_without_a_leading_pipe_is_not_prose(self):
+        t = "Name | Count\n---|---\nThe first row has text. | one\nThe second row. | two\n"
+        self.assertEqual(texts(t), [])
+        t = "Intro.\n\n| a | b |\n|---|---|\nfoo | bar\nbaz\n\nAfter the table.\n"
+        self.assertEqual(texts(t), ["Intro.", "After the table."])
+        self.assertEqual(texts("Intro.\nName | Count\n--- | ---\nrow | 1\n\nEnd here.\n"), ["Intro.", "End here."])
+        self.assertEqual(texts("A | B\n--|--\nx | y\n# Heading\nProse after.\n"), ["Heading", "Prose after."])
+        self.assertEqual(texts("Fine | it is\nand done.\n"), ["Fine | it is and done."])
+
+    def test_set_cannot_destroy_a_table_without_a_leading_pipe(self):
+        t = "Name | Count\n---|---\nThe first row has text. | one\nThe second row. | two\n"
+        with self.assertRaises(furbish.ConfigError):
+            furbish.set_sentence(t, "S1", "New sentence.")
+
+    def test_indented_code_is_not_prose_and_not_checked(self):
+        t = "Run this:\n\n    @someone `abc1234` is in the code. The thing never ran at all today.\n\nDone.\n"
+        self.assertEqual(texts(t), ["Run this:", "Done."])
+        self.assertEqual(furbish.check(t), [])
+        self.assertEqual(texts("One.\n\n    code one\n\n    code two\n\nBack.\n"), ["One.", "Back."])
+        self.assertEqual(texts("One.\n\n\tcode\n\nBack.\n"), ["One.", "Back."])
+        with self.assertRaises(furbish.ConfigError):
+            furbish.set_sentence(t, "S3", "Rewritten here.")
+
+    def test_four_spaces_are_not_code_in_a_list_a_continuation_or_a_wrapped_paragraph(self):
+        self.assertEqual(texts("- item\n\n    continued paragraph of the item.\n\nAfter.\n"), ["item", "continued paragraph of the item.", "After."])
+        self.assertEqual(texts("A line\n    wrapped under it.\n"), ["A line wrapped under it."])
+        self.assertEqual(texts("1. one\n   two\n\n    three\n"), ["one two", "three"])
+
+    def test_a_details_tag_inside_code_does_not_fold_the_rest_of_the_post(self):
+        p = {"tldr": "required", "tldr_words": 5, "tldr_max_sentences": 3}
+        d = "Use the `<details>` tag for long logs.\n\n" + "Many words here indeed. " * 20 + "\n"
+        self.assertEqual([x.rule for x in furbish.check(d, p)], ["tldr"])
+
+    def test_the_tldr_rule_reads_a_prefix_a_byte_order_mark_and_a_heading_after_the_tldr(self):
+        pp = {"first_line_prefix": "Example:", "tldr": "required", "tldr_words": 1, "tldr_max_sentences": 3}
+        self.assertEqual(furbish.check("Example: **TL;DR:** Fixed it.\n\nBody.\n", pp), [])
+        self.assertEqual(furbish.check("Example:**TL;DR:** Fixed it.\n\nBody.\n", pp), [])
+        self.assertEqual(furbish.check("\ufeffExample: **TL;DR:** Fixed it.\n", pp), [])
+        q = {"tldr": "required", "tldr_words": 1, "tldr_max_sentences": 2}
+        self.assertEqual(furbish.check("**TL;DR:** One. Two.\n## Heading here\n\nBody.\n", q), [])
+        self.assertEqual(len(furbish.check("**TL;DR:** One. Two. Three.\n## Heading here\n", q)), 1)
+
+    def test_one_grader_for_check_and_split(self):
+        d = "Press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> to open it quickly.\n"
+        self.assertEqual(furbish.check(d, None, True), [])
+        self.assertEqual(furbish._cleaned("Run ``a ` b`` now and `x`."), "Run code now and code.")
+        self.assertEqual(furbish._cleaned("A <b>bold</b> move with [a link](http://x.y) and http://x.y/z."), "A bold move with a link and link")
+        self.assertFalse(hasattr(furbish.read_prose("One here.")[0], "grade"))
+
+    def test_every_kind_of_heading_is_exempt_from_the_grade_and_from_split(self):
+        hard = FA + "; " + FB + "."
+        for d in ("# " + hard, "   ## " + hard, hard + "\n===", hard + "\n---", "\ufeff# " + hard):
+            self.assertEqual([p for p in furbish.check(d + "\n", None, True) if p.rule == "grade"], [], d)
+            self.assertEqual(sg(d + "\n"), [], d)
+        self.assertEqual(len([p for p in furbish.check(hard + "\n", None, True) if p.rule == "grade"]), 1)
+
+    def test_mentions_are_found_next_to_punctuation_but_not_in_links_urls_emails_or_code(self):
+        for s in ('"@someone"', "'@someone'", "\u2014@someone", "[@someone]", "*@someone*", "hi,@someone", ">@someone", "(@someone)", "@someone", "a @someone b"):
+            self.assertEqual([p.rule for p in furbish.check(s + "\n")], ["mention"], s)
+        for s in ("[@x](http://y.z)", "a@b.com", "https://github.com/@x/y", "`@x`", "![@x](a.png)", "[see @x](http://y.z)"):
+            self.assertEqual(furbish.check(s + "\n"), [], s)
+
+    def test_the_licence_message_gives_an_example_that_fits(self):
+        got = {p.message.split(" ")[0] + " " + p.message.split(" ")[1]: p.message.rsplit("for example ", 1)[1] for p in furbish.check("Under Apache 2.0 and BSD 3-Clause and BSD 2-Clause and GPLv2.\n")}
+        self.assertEqual(sorted(got.values()), ["Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "GPL-2.0-only"])
+
+    def test_a_missing_template_names_the_config_key(self):
+        cfg = self.write('[repo."a/b"]\npr_template = "/nonexistent/tpl.md"\n', "cfg.toml")
+        r = subprocess.run([sys.executable, "-I", SCRIPT, "check", "--repo", "a/b", self.write("Hi.\n", "d.md")], capture_output=True, text=True, env={"HOME": self.tmp, "PATH": "/usr/bin:/bin", "FURBISH_CONFIG": cfg})
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("pr_template in the config", r.stderr)
+
+    def test_the_details_message_says_formatted_not_displayed(self):
+        d = "<details>\n<summary>x</summary>\nText.\n</details>\n"
+        self.assertTrue(all("will not be formatted" in p.message for p in furbish.check(d)))
+
+    def test_a_sha_that_starts_a_sentence_splits_the_same_bare_or_in_code(self):
+        a = "Reverted the change. `abc1234` was the bad commit, which introduced the regression in the loader.\n\nThe test suite passes again.\n"
+        b = furbish.fix_text(a).text
+        self.assertEqual([x.text for x in furbish.read_prose(b)][:1], ["Reverted the change."])
+        self.assertEqual(len(furbish.read_prose(b)), len(furbish.read_prose(a)))
+        self.assertEqual(len(furbish.read_prose("See the doc. https://example.com/a explains it.")), 2)
+        self.assertEqual(len(furbish.read_prose("See e.g. abc more. Then stop.")), 2)
+
+    def test_fix_never_changes_how_many_sentences_there_are_unless_code_names_empty_one(self):
+        import random
+        rnd = random.Random(3)
+        bits = ["Fixed in", "`abc1234`", "`https://e.com/a`", "was the bad commit.", "It broke.", "see", "and then", "Then it ran.", "`x`", "text here", "[l](http://e.com)", "More words follow here.", "<details>", "</details>", "<summary>x</summary>", "", "- item", "> q"]
+        for _ in range(2500):
+            d = "\n".join(" ".join(rnd.choice(bits) for _ in range(rnd.randint(1, 5))) for _ in range(rnd.randint(1, 7))) + "\n"
+            try:
+                once = fx(d)
+            except furbish.Refused:
+                continue
+            self.assertEqual([x.text.replace("`", "") for x in furbish.read_prose(once)], [x.text.replace("`", "") for x in furbish.read_prose(d)], d)
+
+    def test_a_split_applied_with_set_gives_two_sentences_to_the_reader(self):
+        for mid in ("; ", " - ", ", but ", "; https://example.com/documentation "):
+            for x in sg(FA + mid + FB + ".\n"):
+                self.assertEqual(len(furbish.read_prose(x.first + " " + x.second)), 2, (mid, x.first, x.second))
+
+    def test_a_cut_is_never_made_inside_underscore_or_strikethrough_emphasis(self):
+        b = furbish._breaks
+        self.assertEqual(b("A _b; c_ d."), [])
+        self.assertEqual(b("A ~~b; c~~ d."), [])
+        self.assertEqual(len(b("A snake_case_name; and more.")), 1)
+        self.assertEqual(len(b("A _b_ c; d.")), 1)
+        self.assertEqual(sg("_The configuration loader reads every key and reports each mistake with the path of the file; the command line prints only the problems that it finds_ in the draft.\n"), [])
+
+
+class TestDiffsWithoutAFinalNewline(ConfigCase):
+    def run_cli(self, *args):
+        return subprocess.run([sys.executable, "-I", SCRIPT, *args], capture_output=True, text=True, env={"HOME": self.tmp, "PATH": "/usr/bin:/bin"})
+
+    def test_fix_marks_a_last_line_with_no_newline(self):
+        path = self.write("A `abc1234` b.\nSecond line here.\nThird `def5678` end", "d.md")
+        r = self.run_cli("fix", path)
+        self.assertEqual(r.stdout.splitlines()[2:], ["@@ -1,3 +1,3 @@", "-A `abc1234` b.", "+A abc1234 b.", " Second line here.", "-Third `def5678` end", "\\ No newline at end of file", "+Third def5678 end", "\\ No newline at end of file"])
+
+    def test_fix_marks_an_unchanged_last_line_that_is_context(self):
+        path = self.write("A `abc1234` b.\nlast line no newline", "d.md")
+        r = self.run_cli("fix", path)
+        self.assertEqual(r.stdout.splitlines()[2:], ["@@ -1,2 +1,2 @@", "-A `abc1234` b.", "+A abc1234 b.", " last line no newline", "\\ No newline at end of file"])
+
+    def test_set_marks_a_last_line_with_no_newline_and_only_then(self):
+        path = self.write("One here. Two here.", "d.md")
+        self.assertEqual(self.run_cli("set", path, "S2", "Deux.").stdout.splitlines()[3:], ["-One here. Two here.", "\\ No newline at end of file", "+One here. Deux.", "\\ No newline at end of file"])
+        path = self.write("One here. Two here.\n", "e.md")
+        self.assertEqual(self.run_cli("set", path, "S2", "Deux.").stdout.splitlines()[3:], ["-One here. Two here.", "+One here. Deux."])
+        path = self.write("One here.\nTwo here.\nThree here.", "f.md")
+        self.assertEqual(self.run_cli("set", path, "S1", "Un.").stdout.splitlines()[3:], ["-One here.", "+Un."])
+
+    @unittest.skipUnless(shutil.which("patch"), "patch is not installed")
+    def test_the_diffs_apply_with_patch(self):
+        for body, args in (("A `abc1234` b.\nSecond line here.\nThird `def5678` end", ("fix",)), ("A `abc1234` b.\nlast `def5678`\n", ("fix",)), ("One here. Two here.", ("set", "S2", "Deux."))):
+            path = self.write(body, "p.md")
+            diff = self.write(self.run_cli(args[0], path, *args[1:]).stdout, "p.diff")
+            r = subprocess.run(["patch", "--dry-run", path, diff], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, (body, r.stdout, r.stderr))
+            self.assertNotIn("FAILED", r.stdout + r.stderr)
+            self.assertNotIn("fuzz", r.stdout + r.stderr)
 
 
 class TestSplitCli(ConfigCase):
