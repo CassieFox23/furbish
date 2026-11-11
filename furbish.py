@@ -552,7 +552,7 @@ def _validate_external(ext, repo):
 def _validate_profile(profile, repo):
     if not isinstance(profile, dict):
         raise ConfigError(f"profile for {repo} must be a table")
-    allowed = {"pr_template", "issue_template", "first_line_prefix", "footer", "tldr", "tldr_words", "tldr_max_sentences", "banned", "private", "keep_negation", "code_names", "external"}
+    allowed = {"pr_template", "issue_template", "first_line_prefix", "first_line_skip", "footer", "tldr", "tldr_words", "tldr_max_sentences", "banned", "private", "keep_negation", "code_names", "external"}
     for k in profile:
         if k not in allowed:
             raise ConfigError(f"unknown key {k} in profile for {repo}")
@@ -567,6 +567,13 @@ def _validate_profile(profile, repo):
     first_line_prefix = profile.get("first_line_prefix")
     if first_line_prefix is not None:
         _validate_nonempty_string("first_line_prefix", first_line_prefix, repo)
+    first_line_skip = profile.get("first_line_skip")
+    if first_line_skip is not None:
+        _validate_nonempty_string("first_line_skip", first_line_skip, repo)
+        try:
+            re.compile(first_line_skip)
+        except (re.error, OverflowError, RecursionError):
+            raise ConfigError(f"first_line_skip in {repo} is not a valid regex")
     footer = profile.get("footer")
     if footer is not None:
         _validate_string("footer", footer, repo)
@@ -602,6 +609,7 @@ def _validate_profile(profile, repo):
         "pr_template": pr_template,
         "issue_template": issue_template,
         "first_line_prefix": first_line_prefix,
+        "first_line_skip": first_line_skip,
         "footer": footer,
         "tldr": tldr,
         "tldr_words": tldr_words,
@@ -751,6 +759,11 @@ def _rule_tldr(lines, outside, sentences, p):
     i = _first_nonblank(lines)
     if i is None:
         return []
+    skip = p.get("first_line_skip")
+    if skip and re.fullmatch(skip, lines[i].strip()):
+        after = _first_nonblank(lines[i + 1:])
+        if after is not None:
+            i += 1 + after
     no = i + 1
     first = lines[i].lstrip()
     if prefix and first.startswith(prefix):

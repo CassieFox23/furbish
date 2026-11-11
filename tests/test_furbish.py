@@ -311,7 +311,7 @@ class TestLoadConfig(ConfigCase):
     def test_omitted_keys_get_plain_defaults(self):
         p = self.load('[repo."a/b"]\n')["repo"]["a/b"]
         self.assertEqual(p, {
-            "pr_template": None, "issue_template": None, "first_line_prefix": None, "footer": None,
+            "pr_template": None, "issue_template": None, "first_line_prefix": None, "first_line_skip": None, "footer": None,
             "tldr": "off", "tldr_words": None, "tldr_max_sentences": None,
             "banned": [], "private": [], "keep_negation": [],
             "code_names": {"quoted_tests": False, "checks": [], "states": []},
@@ -424,7 +424,7 @@ EASY = "Run the tests before you push."
 
 def prof(**kw):
     p = {
-        "pr_template": None, "issue_template": None, "first_line_prefix": None, "footer": None,
+        "pr_template": None, "issue_template": None, "first_line_prefix": None, "first_line_skip": None, "footer": None,
         "tldr": "off", "tldr_words": None, "tldr_max_sentences": None,
         "banned": [], "private": [], "keep_negation": [],
         "code_names": {"quoted_tests": False, "checks": [], "states": []},
@@ -611,6 +611,21 @@ class TestCheckTldr(unittest.TestCase):
     def test_a_first_line_prefix_comes_before_the_tldr(self):
         p = prof(tldr="required", tldr_words=20, tldr_max_sentences=2, first_line_prefix="[AUTO] ")
         self.assertEqual(probs("[AUTO] **TL;DR:** Short summary.\n\n" + words(25) + "\n", p), [])
+
+    def test_a_skippable_first_line_comes_before_the_tldr(self):
+        p = prof(tldr="required", tldr_words=20, tldr_max_sentences=2, first_line_skip=r"!\[badge\]\(\S+\)")
+        badge = "![badge](https://example.org/b.svg)\n\n"
+        self.assertEqual(probs(badge + "**TL;DR:** Short summary.\n\n" + words(25) + "\n", p), [])
+        self.assertEqual(probs(badge + "**TL;DR:** One thing. Two things. Three things.\n", p), [(3, "tldr")])
+        self.assertEqual(probs(badge + words(25) + "\n", p), [(3, "tldr")])
+
+    def test_only_a_whole_first_line_is_skipped(self):
+        p = prof(tldr="required", tldr_words=20, tldr_max_sentences=2, first_line_skip="Badge")
+        self.assertEqual(probs("Badge and more words.\n\n**TL;DR:** Short.\n\n" + words(25) + "\n", p), [(1, "tldr")])
+
+    def test_a_bad_first_line_skip_is_reported(self):
+        with self.assertRaises(furbish.ConfigError):
+            furbish._validate_profile({"first_line_skip": "("}, "example-org/example")
 
     def test_off_means_off(self):
         self.assertEqual(probs(words(500) + "\n", prof(tldr="off")), [])

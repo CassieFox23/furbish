@@ -27,7 +27,6 @@ What is done, what is known to be missing, what is planned and what is not comin
 
 Things furbish does not do yet, or does in a way a person might not expect. None is a crash or a way to lose text.
 
-- **A first-line badge or tag before the TL;DR.** The TL;DR rule reads the first non-blank line, so a post that opens with a badge or an automation tag is flagged for a missing TL;DR. A config key that names a skippable first-line pattern would fix it
 - **Outside checkers:** a checker's output is held in memory with no size cap, and a timeout stops the checker but not a program it started
 - **Upper-case commit shas:** `set` keeps them, but `check` does not flag one in backticks and `fix` does not take the backticks off
 - **The TL;DR line** is accepted only as `**TL;DR:**`; the colon outside the bold is not
