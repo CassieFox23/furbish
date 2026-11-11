@@ -1,4 +1,4 @@
-# furbish
+<p align="center"><img src="docs/wordmark.png" alt="furbish" width="492"></p>
 
 Checks and tidies GitHub PR and issue drafts before they're posted: plain words, house rules, safe fixes. Script-first and offline.
 
