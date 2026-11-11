@@ -19,11 +19,8 @@ What is planned, in order, and what is not coming. Finished work is in [CHANGELO
 - the outside checkers: `check` runs each `external` entry from the profile after its own rules. `lines` mode reports the output lines matching a fail regex, and `json` mode reads Vale's `--output=JSON`. Both are covered by tests with stand-in checkers, and the real Vale was run through them
 - **`set`:** `furbish set DRAFT S12 "text"` replaces one sentence by the id `check` prints, at its exact place in the file (a wrapped sentence becomes one line, line endings and everything around it are kept). It refuses a rewrite that drops a number, commit sha or inline-code span of the old sentence, or the negation of a sentence under a `keep_negation` heading, or that would change how the rest of the draft reads. It shows a diff and writes only with `--write`, atomically. A 262 KB draft takes about half a second
 - **`fix`:** `furbish fix DRAFT` shows the safe mechanical edits as a diff and writes them only with `--write`: the backticks off a lone commit sha or URL, the blank lines GitHub needs inside `<details>`, and, with `code_names` in the profile, quoted test names, CI check names and CI states as inline code. It never touches code, comments, tables, quotes, link text, headings, checkboxes, template lines or the footer, a second run changes nothing, and it refuses a change that would alter the draft's blocks. Informal licence names are not fixed: `GPLv2` can mean more than one SPDX id, so `check` flags them and a person picks
-
-## Next: the core
-
-- **`split`:** suggest where long sentences can break, only when both halves read easier
-- **Tests:** made-up drafts only, and a timing test for each command on a 262 KB draft, GitHub's comment ceiling, checked in under 1 second (`check` has its own)
+- **`split`:** `furbish split DRAFT` looks at every sentence that reads at grade 10 or harder and prints where it could be cut in two, only when both halves read at least a whole grade easier. The cuts are a semicolon, a spaced dash, and a comma before and, but, so, or or yet; never inside code, links, URLs, tags or quotes, never with a bracket or emphasis left open, and not in a sentence over 2,000 characters. It only suggests; `set` applies a suggestion
+- **Tests:** made-up drafts only, and a timing test for each command on a 262 KB draft, GitHub's comment ceiling, checked in under 1 second, with hostile floods beside it
 
 ## Later
 

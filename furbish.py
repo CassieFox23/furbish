@@ -4,9 +4,6 @@ from collections import namedtuple
 
 __version__ = "0.1.0.dev0"
 
-PLANNED = """planned commands, not working yet:
-  split DRAFT            planned: suggest where to split long sentences"""
-
 Sentence = namedtuple("Sentence", "id line text grade")
 Located = namedtuple("Located", "sentence where kind level heading under span")
 
@@ -810,8 +807,15 @@ def _rule_details(lines, outside):
     return [Problem(no, "", "details-blank", f"a blank line is needed {side} {'</summary>' if side == 'after' else '</details>'} or the text inside will not display") for no, side in _details_gaps(lines, outside)]
 
 
-def _rule_grade(lines, sentences, exempt):
-    out = []
+def _cleaned(text):
+    cleaned = _LABEL_RE.sub("", text)
+    cleaned = _CODE_RE.sub("code", cleaned)
+    cleaned = _unlink(cleaned)
+    cleaned = _BARE_URL_RE.sub("link", cleaned)
+    return cleaned.replace("*", "").replace("~~", "")
+
+
+def _hard(lines, sentences, exempt):
     skipped = {}
     for s in sentences:
         skip = skipped.get(s.line)
@@ -820,17 +824,16 @@ def _rule_grade(lines, sentences, exempt):
             skip = skipped[s.line] = src in exempt or bool(_GRADE_HEADING_RE.match(src) or _CHECKBOX_RE.match(src))
         if skip:
             continue
-        cleaned = _LABEL_RE.sub("", s.text)
-        cleaned = _CODE_RE.sub("code", cleaned)
-        cleaned = _unlink(cleaned)
-        cleaned = _BARE_URL_RE.sub("link", cleaned)
-        cleaned = cleaned.replace("*", "").replace("~~", "")
+        cleaned = _cleaned(s.text)
         if len(cleaned.split()) < 3:
             continue
         grade = ari(cleaned)
         if grade >= 10:
-            out.append(Problem(s.line, s.id, "grade", f"the reading grade is {round(grade)}, which is too hard; every sentence should be under grade 10"))
-    return out
+            yield s, grade
+
+
+def _rule_grade(lines, sentences, exempt):
+    return [Problem(s.line, s.id, "grade", f"the reading grade is {round(grade)}, which is too hard; every sentence should be under grade 10") for s, grade in _hard(lines, sentences, exempt)]
 
 
 def check(text, profile=None, post=False, exempt=frozenset()):
@@ -1356,6 +1359,60 @@ def _hunks(old, new, tags, context=1):
     return out
 
 
+_BREAK = re.compile(r"; +| [\u2014\u2013-] +|, +(?=(?:and|but|so|or|yet) )")
+_STARS = re.compile(r"\*+")
+_SPLIT_MAX = 2000
+_SPLIT_TRIES = 30
+Suggestion = namedtuple("Suggestion", "line sid grade first second grades")
+
+
+def _breaks(text):
+    s = _shield(text)
+    end = len(text.rstrip())
+    out = []
+    pos = opens = closes = stars = 0
+    lead = False
+    for m in _BREAK.finditer(s):
+        a, b = m.span()
+        opens += text.count("(", pos, a)
+        closes += text.count(")", pos, a)
+        stars += len(_STARS.findall(text, pos, a))
+        lead = lead or bool(text[pos:a].strip())
+        pos = a
+        if lead and b < end and opens == closes and stars % 2 == 0:
+            out.append((a, b))
+    return out
+
+
+def _half(text):
+    cleaned = _cleaned(text)
+    return ari(cleaned) if len(cleaned.split()) >= 3 else None
+
+
+def split_suggestions(text, profile=None, exempt=frozenset()):
+    p = profile or {}
+    lines = text.replace("\r\n", "\n").split("\n")
+    out = []
+    for s, grade in _hard(lines, read_prose(text, p.get("footer")), exempt):
+        if len(s.text) > _SPLIT_MAX:
+            continue
+        middle = len(s.text) / 2
+        marks = sorted(_breaks(s.text), key=lambda m: abs(m[0] - middle))[:_SPLIT_TRIES]
+        best = None
+        for a, b in marks:
+            gl, gr = _half(s.text[:a]), _half(s.text[b:])
+            if gl is None or gr is None or round(gl) >= round(grade) or round(gr) >= round(grade):
+                continue
+            if best is None or max(gl, gr) < max(best[2]):
+                best = (a, b, (gl, gr))
+        if best:
+            a, b, grades = best
+            first = s.text[:a].rstrip(" ,;:\u2014\u2013-") + "."
+            right = s.text[b:]
+            out.append(Suggestion(s.line, s.id, grade, first, right[:1].upper() + right[1:] if right[:1].isalpha() else right, grades))
+    return out
+
+
 def _read_text(path, strict=False):
     try:
         with open(path, "rb") as f:
@@ -1490,9 +1547,27 @@ def _run_fix(args):
     return 0
 
 
+def _run_split(args):
+    try:
+        path = find_config(os.environ)
+        config = load_config(path) if path else None
+        profile = pick_profile(config, args.repo)
+        exempt = _template_lines(profile)
+        found = split_suggestions(_read_text(args.draft), profile, exempt)
+    except ConfigError as e:
+        print(f"furbish: {_plain(str(e))}", file=sys.stderr)
+        return 2
+    shown = _plain(args.draft)
+    for x in found:
+        print(f"{shown}:{x.line}: {x.sid}: reading grade {round(x.grade)}. As two sentences it would read at grade {round(x.grades[0])} and {round(x.grades[1])}:")
+        print(f"    {_plain(x.first)}")
+        print(f"    {_plain(x.second)}")
+    return 0
+
+
 def main():
     argv = sys.argv[1:]
-    ap = argparse.ArgumentParser(prog="furbish", description="Checks and tidies GitHub PR and issue drafts before they're posted: plain words, house rules, safe fixes. Script-first and offline.", epilog=PLANNED, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(prog="furbish", description="Checks and tidies GitHub PR and issue drafts before they're posted: plain words, house rules, safe fixes. Script-first and offline.")
     ap.add_argument("--version", action="version", version=f"furbish {__version__}")
     sub = ap.add_subparsers(dest="command", metavar="command")
     ck = sub.add_parser("check", help="print only the problems in a draft, with line and sentence id", description="Prints only the problems in a draft, one per line as path:line: message, and nothing at all when the draft passes. Exits 0 when it passes, 1 when it finds problems and 2 when it cannot run.")
@@ -1509,6 +1584,9 @@ def main():
     fi.add_argument("draft", help="the draft file to change")
     fi.add_argument("--repo", metavar="OWNER/NAME", help="the repo profile from the config file to use; without it, default_repo is used")
     fi.add_argument("--write", action="store_true", help="change the file; without it nothing is written")
+    sp = sub.add_parser("split", help="suggest where a hard sentence could be cut in two", description="Looks at every sentence that reads at grade 10 or harder (the sentences check --post flags) and, where cutting it at a semicolon, a spaced dash or a comma before and, but, so, or or yet gives two sentences that both read easier, prints the sentence id and the two sentences. It only suggests: it never changes the draft, so apply a suggestion with furbish set. It looks only in plain prose, never inside code, links, URLs or quotes, and skips a sentence over 2,000 characters. Prints nothing when it has no suggestion. Exits 0, or 2 when it cannot run.")
+    sp.add_argument("draft", help="the draft file to look at")
+    sp.add_argument("--repo", metavar="OWNER/NAME", help="the repo profile from the config file to use; without it, default_repo is used")
     if not argv:
         ap.print_help(sys.stderr)
         return 2
@@ -1519,6 +1597,8 @@ def main():
         return _run_set(args)
     if args.command == "fix":
         return _run_fix(args)
+    if args.command == "split":
+        return _run_split(args)
     return 0
 
 

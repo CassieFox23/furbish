@@ -818,8 +818,8 @@ class TestCheckCli(ConfigCase):
         self.assertIn("check", r.stdout)
         self.assertNotIn("planned: print only the problems", r.stdout)
         self.assertNotIn("planned: replace one sentence", r.stdout)
-        self.assertIn("planned: suggest where to split", r.stdout)
-        self.assertNotIn("planned: safe mechanical edits", r.stdout)
+        self.assertNotIn("planned", r.stdout)
+        self.assertIn("split", r.stdout)
 
 
 LINES_SCRIPT = """import sys
@@ -2132,6 +2132,255 @@ class TestFixCli(ConfigCase):
         path = self.draft((body * (262000 // len(body) + 1))[:262000] + "\nFixed in `abc1234`.\n")
         t = time.perf_counter()
         r = self.run_fix(path, "--write")
+        self.assertEqual(r.returncode, 0, r.stderr[-300:])
+        self.assertLess(time.perf_counter() - t, 2.0)
+
+
+SPLIT_A = "The configuration loader reads every key and reports each mistake with the path of the file"
+SPLIT_B = "the command line prints only the problems that it finds in the draft."
+
+
+def sg(text, profile=None, exempt=frozenset()):
+    return furbish.split_suggestions(text, profile, exempt)
+
+
+class TestSplitBreaks(unittest.TestCase):
+    def test_the_places_a_sentence_can_be_cut(self):
+        b = furbish._breaks
+        self.assertEqual(b("Run the tests; then push it."), [(13, 15)])
+        self.assertEqual(b("It is slow - and it fails."), [(10, 13)])
+        self.assertEqual(b("It ran \u2014 and failed."), [(6, 9)])
+        self.assertEqual(b("It ran \u2013 and failed."), [(6, 9)])
+        self.assertEqual(b("It is slow, and it fails, but it runs."), [(10, 12), (24, 26)])
+        self.assertEqual(b("A, so B, or C, yet D."), [(1, 3), (7, 9), (13, 15)])
+
+    def test_things_that_are_not_places_to_cut(self):
+        b = furbish._breaks
+        for t in ("It is slow and it fails.", "It is slow, which is bad.", "It is slow, because it fails.", "It is slow, And it fails.", "It is slow,and it fails.", "It is slow-and it fails.", "; start.", "end;", "end; ", "It is slow, and", "A-B and C.", "Run it: then stop."):
+            self.assertEqual(b(t), [], t)
+
+    def test_marks_inside_code_links_urls_tags_and_quotes_are_ignored(self):
+        b = furbish._breaks
+        self.assertEqual(b("Use `a; b` here; then stop."), [(15, 17)])
+        self.assertEqual(b("See [a, and b](http://x.y) now, and go."), [(30, 32)])
+        self.assertEqual(b("See http://x.y/a;b now; go."), [(22, 24)])
+        self.assertEqual(b('He said "a; b" and left; later.'), [(23, 25)])
+        self.assertEqual(b("A <b title='x; y'>b</b> c; d."), [(25, 27)])
+
+    def test_a_cut_cannot_leave_a_bracket_or_emphasis_open(self):
+        b = furbish._breaks
+        self.assertEqual(b("A (b; c) d; e."), [(10, 12)])
+        self.assertEqual(b("A **b; c** d; e."), [(12, 14)])
+        self.assertEqual(b("A *b; c* d; e."), [(10, 12)])
+
+    def test_hostile_text_stays_fast(self):
+        for d in ("a; " * 86000, "a, and " * 37000, "(" * 130000 + "; x", "a - " * 65000, "", '"a; ' * 65000, "*" * 200000 + "; b", "[a, and " * 30000, "`a; " * 65000, "<a; " * 65000):
+            t = time.perf_counter()
+            furbish._breaks(d)
+            self.assertLess(time.perf_counter() - t, 2.0, d[:12])
+
+
+class TestSplitSuggestions(unittest.TestCase):
+    def one(self, text, **kw):
+        found = sg(text, **kw)
+        self.assertEqual(len(found), 1, found)
+        return found[0]
+
+    def test_a_hard_sentence_is_cut_where_both_halves_read_easier(self):
+        x = self.one(f"{SPLIT_A}, and {SPLIT_B}\n")
+        self.assertEqual((x.line, x.sid, round(x.grade)), (1, "S1", 15))
+        self.assertEqual(x.first, SPLIT_A + ".")
+        self.assertEqual(x.second, "And " + SPLIT_B)
+        self.assertEqual([round(g) for g in x.grades], [9, 5])
+
+    def test_every_kind_of_mark_can_be_the_cut(self):
+        for mid, word in ((";", "The"), (" -", "The"), (" \u2014", "The"), (",", "So"), (", or", "Or"), (", yet", "Yet"), (", but", "But")):
+            text = f"{SPLIT_A}{mid}{' ' if mid.endswith(';') else ' '}{SPLIT_B if word == 'The' else word.lower() + ' ' + SPLIT_B}"
+            if mid == ",":
+                text = f"{SPLIT_A}, so {SPLIT_B}"
+            x = self.one(text + "\n")
+            self.assertEqual(x.first, SPLIT_A + ".", mid)
+            self.assertTrue(x.second.startswith(word if word != "The" else "The command"), (mid, x.second))
+
+    def test_the_best_cut_is_the_one_with_the_easier_harder_half(self):
+        text = "The configuration loader reads every key, and it reports each mistake with the path of the file, but the command line prints only the problems that it finds in the draft.\n"
+        x = self.one(text)
+        self.assertEqual(x.first, "The configuration loader reads every key, and it reports each mistake with the path of the file.")
+        self.assertEqual(x.second, "But the command line prints only the problems that it finds in the draft.")
+
+    def test_a_cut_that_makes_a_half_harder_is_not_suggested(self):
+        for t in ("Unquestionably, the implementation's architectural characteristics necessitate comprehensive reconsideration; however, nobody noticed the problem until the maintainers examined the repository.", "The authentication middleware implementation validates cryptographic signatures - and the infrastructure monitoring subsystem records everything.", "Run the tests first, but remember that the continuous integration pipeline sometimes takes considerably longer than expected."):
+            self.assertGreaterEqual(furbish.ari(furbish._cleaned(t)), 10)
+            self.assertEqual(sg(t + "\n"), [], t)
+
+    def test_easy_sentences_and_sentences_with_no_mark_are_left_alone(self):
+        for t in ("The unit tests all pass on Linux, so the build is fine.", "Unquestionably, the implementation's architectural characteristics necessitate comprehensive reconsideration.", f"{SPLIT_A} and {SPLIT_B}", f"{SPLIT_A}, which {SPLIT_B}"):
+            self.assertEqual(sg(t + "\n"), [], t)
+
+    def test_a_half_with_fewer_than_three_words_is_not_a_half(self):
+        self.assertEqual(sg("Done, and the continuous integration infrastructure configuration validates comprehensively every authentication repository.\n"), [])
+        self.assertEqual(sg("The continuous integration infrastructure configuration validates comprehensively every authentication repository; done.\n"), [])
+
+    def test_marks_in_code_links_urls_and_quotes_are_not_used(self):
+        for mark in ("`path; of; the; file`", "[the path, and the file](http://x.y)", "http://x.y/a;b;c", '"a; b; c"'):
+            t = f"The configuration loader reads every key and reports each mistake with {mark} and the command line prints only the problems that it finds in the draft."
+            self.assertEqual(sg(t + "\n"), [], mark)
+            t = f"The configuration loader reads every key and reports each mistake with {mark}; the command line prints only the problems that it finds in the draft."
+            x = self.one(t + "\n")
+            self.assertTrue(x.first.endswith(mark + "."), (mark, x.first))
+
+    def test_a_cut_cannot_split_brackets_or_emphasis(self):
+        t = f"{SPLIT_A} (which is shown in full; and which is clear) and {SPLIT_B}"
+        self.assertEqual(sg(t + "\n"), [])
+        t = f"{SPLIT_A} and **{SPLIT_B[:-1]}; in full** here."
+        self.assertEqual(sg(t + "\n"), [])
+
+    def test_headings_checkboxes_templates_footer_and_labels(self):
+        hard = f"{SPLIT_A}; {SPLIT_B}"
+        self.assertEqual(sg(f"# {hard}\n"), [])
+        self.assertEqual(sg(f"- [ ] {hard}\n"), [])
+        self.assertEqual(sg(f"{hard}\n", None, frozenset({hard})), [])
+        self.assertEqual(sg(f"Fine.\n\n{hard}\n", {"footer": "^" + re.escape(hard) + "$"}), [])
+        x = self.one(f"**Result:** {hard}\n")
+        self.assertEqual(x.first, "**Result:** " + SPLIT_A + ".")
+
+    def test_a_quote_and_a_list_item_are_looked_at(self):
+        self.assertEqual(len(sg(f"- {SPLIT_A}; {SPLIT_B}\n")), 1)
+        self.assertEqual(len(sg(f"> {SPLIT_A}; {SPLIT_B}\n")), 1)
+
+    def test_one_suggestion_for_each_hard_sentence_in_line_order(self):
+        d = f"Fine one.\n\n{SPLIT_A}; {SPLIT_B}\n\nAnother fine one.\n\n{SPLIT_A}, so {SPLIT_B}\n"
+        found = sg(d)
+        self.assertEqual([(x.line, x.sid) for x in found], [(3, "S2"), (7, "S4")])
+
+    def test_a_sentence_over_2000_characters_is_skipped(self):
+        part = f"{SPLIT_A}; {SPLIT_B[:-1]} "
+        long = (part * 20).strip() + "."
+        self.assertGreater(len(long), 2000)
+        self.assertEqual(sg(long + "\n"), [])
+        self.assertEqual(len(sg(part.strip() + "\n")), 1)
+
+    def test_the_second_half_keeps_its_own_markup(self):
+        x = self.one(f"{SPLIT_A}; `code` {SPLIT_B}\n")
+        self.assertTrue(x.second.startswith("`code` the"), x.second)
+        x = self.one(f"{SPLIT_A}; [the](http://x.y) command line prints only the problems that it finds in the draft.\n")
+        self.assertTrue(x.second.startswith("[the](http://x.y)"), x.second)
+
+    def test_the_ids_are_the_ones_check_prints(self):
+        d = f"Fine one.\n\n{SPLIT_A}; {SPLIT_B}\n"
+        self.assertEqual([x.sid for x in sg(d)], ["S2"])
+        self.assertEqual([p.sid for p in furbish.check(d, None, True) if p.rule == "grade"], ["S2"])
+
+    def test_a_262_kb_draft_takes_under_a_second(self):
+        with open(os.path.join(DRAFTS, "pr-body.md"), encoding="utf-8") as f:
+            body = f.read()
+        big = (body * (262000 // len(body) + 1))[:262000]
+        t = time.perf_counter()
+        sg(big, {"footer": FOOTER})
+        self.assertLess(time.perf_counter() - t, 1.0)
+
+    def test_hostile_text_stays_fast(self):
+        hard = f"{SPLIT_A}, and {SPLIT_B[:-1]}; and "
+        cases = ["a, and " * 37000, "a; " * 86000, (hard * 12).strip() + ". ", "Yes. " * 52000, (hard * 15).strip() + ".\n", "`a; " * 65000, "(" * 130000 + "; x", f"{SPLIT_A}; {SPLIT_B}\n" * 1500]
+        for d in cases:
+            for text in (d, (d + "\n") * (260000 // (len(d) + 1) if len(d) < 3000 else 1)):
+                t = time.perf_counter()
+                sg(text[:262000], {"footer": FOOTER})
+                self.assertLess(time.perf_counter() - t, 2.0, d[:14])
+
+
+class TestSplitCli(ConfigCase):
+    HARD = f"{SPLIT_A}, and {SPLIT_B}"
+
+    def env(self, **extra):
+        e = {"HOME": self.tmp, "PATH": "/usr/bin:/bin"}
+        e.update(extra)
+        return e
+
+    def run_split(self, *args, cwd=None, **extra):
+        return subprocess.run([sys.executable, "-I", SCRIPT, "split", *args], capture_output=True, text=True, env=self.env(**extra), cwd=cwd)
+
+    def draft(self, text=None, name="draft.md"):
+        return self.write(f"Fine one.\n\n{self.HARD}\n" if text is None else text, name)
+
+    def test_it_prints_the_id_the_grades_and_the_two_sentences(self):
+        path = self.draft()
+        r = self.run_split(path)
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(r.stdout.splitlines(), [f"{path}:3: S2: reading grade 15. As two sentences it would read at grade 9 and 5:", f"    {SPLIT_A}.", f"    And {SPLIT_B}"])
+        self.assertEqual(r.stderr, "")
+
+    def test_it_never_changes_the_file(self):
+        path = self.draft()
+        with open(path, "rb") as f:
+            before = f.read()
+        self.run_split(path)
+        with open(path, "rb") as f:
+            self.assertEqual(f.read(), before)
+        self.assertEqual(self.run_split(path, "--write").returncode, 2)
+
+    def test_with_nothing_to_suggest_it_prints_nothing_and_exits_0(self):
+        r = self.run_split(self.draft("A short clean note.\n"))
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
+
+    def test_the_repo_profile_gives_the_footer_and_the_template(self):
+        tpl = self.write(self.HARD + "\n", "tpl.md")
+        cfg = self.write(f'[repo."a/b"]\npr_template = {json.dumps(tpl)}\nfooter = {json.dumps(FOOTER)}\n', "cfg.toml")
+        path = self.draft(f"{self.HARD}\n\n{SPLIT_A}; {SPLIT_B}\n\n-- Sent from the made-up example footer\n")
+        self.assertEqual(len(self.run_split(path).stdout.splitlines()), 6)
+        r = self.run_split(path, "--repo", "a/b", FURBISH_CONFIG=cfg)
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(len(r.stdout.splitlines()), 3)
+        self.assertIn(":3: S2:", r.stdout)
+
+    def test_things_that_cannot_run_exit_2_with_a_plain_message(self):
+        path = self.draft()
+        for args in ((os.path.join(self.tmp, "missing.md"),), (path, "--repo", "x/y")):
+            r = self.run_split(*args)
+            self.assertEqual((r.returncode, r.stdout), (2, ""), args)
+            self.assertTrue(r.stderr.startswith("furbish: "), r.stderr)
+            self.assertNotIn("Traceback", r.stderr)
+        self.assertEqual(self.run_split().returncode, 2)
+
+    def test_a_draft_that_is_not_utf8_is_still_read(self):
+        path = self.draft("")
+        with open(path, "wb") as f:
+            f.write(b"Caf\xe9.\n\n" + self.HARD.encode() + b"\n")
+        r = self.run_split(path)
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(len(r.stdout.splitlines()), 3)
+
+    def test_control_characters_are_not_printed(self):
+        path = self.draft(f"{SPLIT_A} \x1b[31m\u202e; {SPLIT_B}\n", "d\x1b[31mx.md")
+        r = self.run_split(path)
+        self.assertEqual(r.returncode, 0)
+        for bad in ("\x1b", "\u202e"):
+            self.assertNotIn(bad, r.stdout)
+        self.assertIn("?", r.stdout)
+
+    def test_a_relative_path_is_found(self):
+        self.draft()
+        self.assertEqual(len(self.run_split("draft.md", cwd=self.tmp).stdout.splitlines()), 3)
+
+    def test_help_lists_split_and_nothing_as_planned(self):
+        r = subprocess.run([sys.executable, "-I", SCRIPT, "--help"], capture_output=True, text=True, env=self.env())
+        self.assertIn("split", r.stdout)
+        self.assertNotIn("planned", r.stdout)
+        self.assertIn("never changes the draft", self.run_split("--help").stdout.replace("\n", " ").replace("  ", " "))
+
+    def test_a_closed_pipe_makes_no_traceback(self):
+        path = self.draft()
+        cmd = f"set -o pipefail; {shlex.quote(sys.executable)} -I {shlex.quote(SCRIPT)} split {shlex.quote(path)} | head -c0; echo ${{PIPESTATUS[0]}}"
+        r = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, env=self.env())
+        self.assertEqual(r.stdout.strip(), "0")
+        self.assertNotIn("Exception", r.stderr)
+
+    def test_a_262_kb_draft_through_the_command_takes_under_two_seconds(self):
+        with open(os.path.join(DRAFTS, "pr-body.md"), encoding="utf-8") as f:
+            body = f.read()
+        path = self.draft((body * (262000 // len(body) + 1))[:262000] + "\n\n" + self.HARD + "\n")
+        t = time.perf_counter()
+        r = self.run_split(path)
         self.assertEqual(r.returncode, 0, r.stderr[-300:])
         self.assertLess(time.perf_counter() - t, 2.0)
 
