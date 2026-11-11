@@ -434,6 +434,10 @@ def _validate_code_names(cn, repo):
     _validate_bool("quoted_tests", quoted_tests, repo)
     _validate_list_of_strings("checks", checks, repo)
     _validate_list_of_strings("states", states, repo)
+    for key, names in (("checks", checks), ("states", states)):
+        for name in names:
+            if not re.match(r"\w", name):
+                raise ConfigError(f"{key} in {repo} has {name!r}, and every name must start with a letter or a digit")
     return {"quoted_tests": quoted_tests, "checks": list(checks), "states": list(states)}
 
 
@@ -624,6 +628,8 @@ def _outside_code(lines):
     fence = None
     comment = False
     for no, line in enumerate(lines, 1):
+        if no == 1:
+            line = line.removeprefix("\ufeff")
         if fence:
             if _fence_close(line, *fence):
                 fence = None
@@ -1131,19 +1137,25 @@ def _merge(ranges):
     return out
 
 
+def _brackets(text):
+    out = []
+    stack = []
+    for m in re.finditer(r"[\[\]]", text):
+        if m.group() == "[":
+            stack.append(m.start())
+        elif stack:
+            out.append((stack.pop(), m.end()))
+    return out
+
+
 def _shield(text, code=True, quotes=True):
     spans = list(_code_spans(text)) if code else []
-    brackets = [i for i, c in enumerate(text) if c in "[]"]
-    for start, end in _target_spans(text):
-        k = bisect.bisect_left(brackets, start - 1)
-        lo = start
-        if k and text[brackets[k - 1]] == "[":
-            lo = brackets[k - 1]
-        spans.append((lo, end))
+    spans += _brackets(text)
+    spans += _target_spans(text)
     spans += [m.span() for m in _URL.finditer(text)]
     spans += [m.span() for m in _TAG.finditer(text)]
     if quotes:
-        spans += _quote_spans(text)
+        spans += _quote_spans(_edit(text, _code_spans(text), lambda t: "\x01" * len(t)))
     out = list(text)
     for s, e in _merge(spans):
         out[s:e] = "\x00" * (e - s)
@@ -1174,15 +1186,16 @@ def _unwrap(text):
 
 def _quoted_tests(text):
     s = _shield(text, code=True, quotes=False)
-    spans = []
-    for m in re.finditer(r'"([^"\s]{1,200})"|“([^”\s]{1,200})”', s):
+    pairs = set(_quote_spans(_edit(text, _code_spans(text), lambda t: "\x01" * len(t))))
+    spans, last = [], -1
+    for m in re.finditer(r'"([^"\s]{1,200})"|\u201c([^\u201d\s]{1,200})\u201d', s):
         a, b = m.span()
-        if "\x00" in s[a:b]:
+        if (a, b) not in pairs or "\x00" in s[a:b] or a == last or text[a - 1:a] == "`" or text[b:b + 1] == "`":
             continue
         name = text[a + 1:b - 1]
-        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:(?:::|\.|/)[A-Za-z0-9_]+)*", name) and (
-                "_" in name or "::" in name or name.lower().startswith("test")):
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:(?:::|\.|/)[A-Za-z0-9_]+)*", name) and ("_" in name or "::" in name or re.match(r"[Tt]est[A-Z0-9]", name)):
             spans.append((a, b, "`" + name + "`"))
+            last = b
     out, pos = [], 0
     for a, b, rep in spans:
         out.append(text[pos:a])
@@ -1201,7 +1214,7 @@ def _wrap_names(text, index):
             continue
         for name in index.get(m.group(), ()):
             b = a + len(name)
-            if s.startswith(name, a) and (b == len(s) or not (s[b].isalnum() or s[b] in "_-")):
+            if s.startswith(name, a) and (b == len(s) or not (s[b].isalnum() or s[b] in "_-")) and text[a - 1:a] != "`" and text[b:b + 1] != "`":
                 spans.append((a, b))
                 last = b
                 break
@@ -1234,6 +1247,35 @@ def _same_structure(old, new):
     return ("<summary" in _mask_code(old).lower()) == ("<summary" in _mask_code(new).lower())
 
 
+def _gap_line(line, exempt, summary):
+    bare = line.removeprefix("\ufeff")
+    flat = bare.strip()
+    if flat in exempt or not flat.startswith("<") or len(bare) - len(bare.lstrip(" ")) >= 4 or bare.startswith("\t"):
+        return False
+    return bool(_HTML_ONLY.fullmatch(flat)) or (summary and "<summary" in _mask_code(flat).lower())
+
+
+def _fixable(lines, kind, parts, exempt):
+    joined = "\n".join(content for _, content, _ in parts)
+    if "\\`" in joined or len(re.findall(r"`+", joined)) != 2 * len(_code_spans(joined)) or "|" in _mask_code(joined):
+        return False
+    for k, (no, content, col) in enumerate(parts):
+        src = lines[no - 1]
+        bare = src.removeprefix("\ufeff")
+        flat = bare.strip()
+        if col is None or not content or src[col:col + len(content)] != content or flat in exempt:
+            return False
+        if "-->" in src[:col] or "<!--" in src or content[0] in ">|" or content.startswith(("```", "~~~")) or _LIST.match(content):
+            return False
+        if k == 0:
+            marker = _LIST.match(bare)
+            if bare.startswith("\t") or len(bare) - len(bare.lstrip(" ")) >= 4 or _CHECKBOX_RE.match(flat) or marker and _TASK.match(bare[marker.end():].lstrip()):
+                return False
+        elif kind == "list" and (bare.startswith("\t") or len(bare) - len(bare.lstrip(" ")) >= 4):
+            return False
+    return True
+
+
 def fix_text(text, profile=None, exempt=frozenset()):
     p = profile or {}
     raw = text.split("\n")
@@ -1246,29 +1288,24 @@ def fix_text(text, profile=None, exempt=frozenset()):
     changed = list(lines)
     blocks = _blocks(lines, footer)
     for kind, parts, _ in blocks:
-        if kind not in ("para", "list"):
-            continue
-        for k, (no, content, col) in enumerate(parts):
-            if col is None or not content:
-                continue
-            src = lines[no - 1]
-            flat = src.strip()
-            if src[col:col + len(content)] != content or flat in exempt or _CHECKBOX_RE.match(flat):
-                continue
-            if kind == "para" and k == 0 and (src.startswith("\t") or len(src) - len(src.lstrip(" ")) >= 4):
-                continue
-            out = _unwrap(content)
+        if kind in ("para", "list") and _fixable(lines, kind, parts, exempt):
+            joined = "\n".join(content for _, content, _ in parts)
+            out = _unwrap(joined)
             if quoted:
                 out = _quoted_tests(out)
             if index:
                 out = _wrap_names(out, index)
-            if out != content:
-                edited = src[:col] + out + src[col + len(content):]
-                if _same_structure(src, edited):
+            pieces = out.split("\n")
+            if out == joined or len(pieces) != len(parts):
+                continue
+            for (no, content, col), piece in zip(parts, pieces):
+                src = lines[no - 1]
+                edited = src[:col] + piece + src[col + len(content):]
+                if piece != content and _same_structure(src, edited):
                     changed[no - 1] = edited
     gaps = _details_gaps(lines, list(_outside_code(lines)))
-    before = {no for no, side in gaps if side == "before" and _HTML_ONLY.fullmatch(lines[no - 1].strip())}
-    after = {no for no, side in gaps if side == "after" and (_HTML_ONLY.fullmatch(lines[no - 1].strip()) or "<summary" in _mask_code(lines[no - 1]).lower())}
+    before = {no for no, side in gaps if side == "before" and _gap_line(lines[no - 1], exempt, False)}
+    after = {no for no, side in gaps if side == "after" and _gap_line(lines[no - 1], exempt, True)}
     new, ends, tags = [], [], []
     for i, line in enumerate(changed):
         if (i + 1) in before or i in after:
@@ -1296,10 +1333,13 @@ def _hunks(old, new, tags, context=1):
                 spans[-1][1] = b
             else:
                 spans.append([a, b])
+    seen = [0]
+    for t, _ in tags:
+        seen.append(seen[-1] + (t != "+"))
     out = []
     for a, b in spans:
-        before = sum(1 for t, _ in tags[:a] if t != "+")
-        count = sum(1 for t, _ in tags[a:b] if t != "+")
+        before = seen[a]
+        count = seen[b] - seen[a]
         body, gone, came = [], [], []
         for k in range(a, b):
             tag, oi = tags[k]

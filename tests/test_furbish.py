@@ -1795,7 +1795,8 @@ class TestFixText(unittest.TestCase):
     def test_a_line_with_a_comment_cut_out_of_it_is_left_alone(self):
         for t in ("Fixed in `abc1234` <!-- c --> now.", "<!-- c --> Fixed in `abc1234`."):
             self.assertEqual(fx(t + "\n"), t + "\n", t)
-        self.assertEqual(fx("<!--\nnote\n--> Fixed in `abc1234` now.\n"), "<!--\nnote\n--> Fixed in abc1234 now.\n")
+        self.assertEqual(fx("<!--\nnote\n--> Fixed in `abc1234` now.\n"), "<!--\nnote\n--> Fixed in `abc1234` now.\n")
+        self.assertEqual(fx("<!--\nnote\n-->\nFixed in `abc1234` now.\n"), "<!--\nnote\n-->\nFixed in abc1234 now.\n")
 
     def test_the_footer_and_template_lines_are_left_alone(self):
         footer = r"^-- Sent with `abc1234`$"
@@ -1876,7 +1877,7 @@ class TestFixText(unittest.TestCase):
     def test_random_drafts_keep_their_shape_and_are_fixed_once(self):
         import random
         rnd = random.Random(7)
-        bits = ["Fixed in", "`abc1234`", "`https://e.com/a`", "passed", "failed", "Example lint", '"test_a"', "[l](https://e.com)", "[`abc1234`](u)", "<details>", "</details>", "<summary>x</summary>", "</summary>", "```", "<!--", "-->", "> q", "| a |", "- item", "1. item", "# Head", "---", "===", "", "", "\t", "  ", "text here.", "More words.", "`x`", "``", "\u201ctest_b\u201d", "- [ ] box", "<b>", "</b>", "@someone", "`https://e.com/<!--`", "`https://e.com/<summary>`", "<summary>", "~~~"]
+        bits = ["Fixed in", "`abc1234`", "`https://e.com/a`", "passed", "failed", "Example lint", '"test_a"', "[l](https://e.com)", "[`abc1234`](u)", "<details>", "</details>", "<summary>x</summary>", "</summary>", "```", "<!--", "-->", "> q", "| a |", "- item", "1. item", "# Head", "---", "===", "", "", "\t", "  ", "text here.", "More words.", "`x`", "``", "\u201ctest_b\u201d", "- [ ] box", "<b>", "</b>", "@someone", "`https://e.com/<!--`", "`https://e.com/<summary>`", "<summary>", "~~~", "`", "\\`", '"', "\u201c", "\u201d", "[a", "b]", "[ref][1]", "[1]: u", "\ufeff", "a | b", "passed`x`", "    "]
         shape = lambda t: [(k, lv, len(parts)) for k, parts, lv in furbish._blocks(t.split("\n"), None)]
         refused = 0
         for _ in range(1500):
@@ -1888,11 +1889,11 @@ class TestFixText(unittest.TestCase):
                 continue
             self.assertEqual(shape(once), shape(d), d)
             self.assertEqual(fx(once, CN), once, d)
-        self.assertLessEqual(refused, 3)
+        self.assertLessEqual(refused, 10)
 
     def test_hostile_text_stays_fast(self):
         names = {"code_names": {"quoted_tests": True, "checks": [f"Check number {i}" for i in range(30)], "states": ["passed", "failed", "skipped"]}}
-        cases = ["`a` " * 65000, "[a" * 130000, "[a](" * 65000, '"a ' * 86000, "<a " * 86000, "http://a " * 30000, "word " * 52000, "`abc1234` " * 28000, "passed " * 37000, '"test_a" ' * 28000, "\u201c" * 130000, "Check number 1 " * 17000, "a" + "`" * 200000, "![a" * 86000, "</summary>\ntext\n" * 17000, "<details>\n" * 26000, "Yes. " * 52000, "- a b c.\n" * 30000]
+        cases = ["`a` " * 65000, "[a" * 130000, "[a](" * 65000, '"a ' * 86000, "<a " * 86000, "http://a " * 30000, "word " * 52000, "`abc1234` " * 28000, "passed " * 37000, '"test_a" ' * 28000, "\u201c" * 130000, "Check number 1 " * 17000, "a" + "`" * 200000, "![a" * 86000, "</summary>\ntext\n" * 17000, "<details>\n" * 26000, "Yes. " * 52000, "- a b c.\n" * 30000, ("`abcdef1`\n\n\n\n" * 20000)[:260000], "passed\n" * 37000, "[a" * 130000]
         for d in cases:
             t = time.perf_counter()
             fx(d, names)
@@ -1906,6 +1907,82 @@ class TestFixText(unittest.TestCase):
         t = time.perf_counter()
         fx(big, names)
         self.assertLess(time.perf_counter() - t, 1.0)
+
+
+class TestFixReviewFixes(unittest.TestCase):
+    P = {"footer": r"^-- x$", "code_names": {"quoted_tests": True, "checks": ["Example lint", "Example"], "states": ["passed", "failed"]}}
+
+    def same(self, *drafts):
+        for d in drafts:
+            self.assertEqual(fx(d, self.P), d, d)
+
+    def test_constructs_that_run_over_several_lines_are_left_alone(self):
+        self.same("see `foo\nbar passed baz` end\n", "[foo\nbar `abcdef1` baz](http://x)\n", "foo [bar\nbaz passed](http://x.y)\n", 'He said "foo bar\nbaz `abcdef1` end" ok\n', "He said \u201cfoo bar\nbaz `abcdef1` end\u201d ok\n")
+
+    def test_indented_and_nested_code_is_left_alone(self):
+        self.same("para\n\n    line1\n    line2 `abcdef1`\n", "para\n\n    - code `abcdef1`\n", "1. item\n\n    ```\n    code `abcdef1`\n    ```\n", "- a\n  - b\n    ```\n    x `abcdef1`\n    ```\n", "\tcode `abcdef1`\n")
+
+    def test_blank_lines_are_not_put_into_quotes_tables_code_or_templates(self):
+        self.same("> <details>\n> <summary>x</summary>\n> body\n> </details>\n", "| a | <summary>x</summary> |\n| b | c |\n", "text\n\n    <details>\n    <summary>x</summary>\n    code\n    </details>\n", "\ufeff```\n</summary>\ntext\n```\n")
+        self.assertEqual(fx("<summary>x</summary>\nText.\n", None, frozenset({"<summary>x</summary>"})), "<summary>x</summary>\nText.\n")
+
+    def test_a_quote_inside_a_list_item_is_left_alone(self):
+        self.same("- > quote in list `abcdef1`\n", "1. > quote passed\n", "- - nested `abcdef1`\n")
+
+    def test_reference_links_and_nested_brackets_are_left_alone(self):
+        self.same("[ref `abcdef1`][1]\n\n[1]: http://x.y\n", "[passed]\n\n[passed]: http://x.y\n", "[a `abcdef1` [b] c](http://x.y)\n", "[a [b `abcdef1`]](http://x.y)\n", "![alt passed](x.png)\n")
+
+    def test_tables_without_a_leading_pipe_are_left_alone(self):
+        self.same("name | sha\n--- | ---\nfoo | `abcdef1`\n", "| a | b |\n|---|---|\nfoo | `abcdef1`\n")
+
+    def test_every_kind_of_checkbox_item_is_left_alone(self):
+        self.same("1. [ ] `abcdef1`\n", "1. [x] passed\n", "- - [ ] `abcdef1`\n", "\ufeff- [ ] `abcdef1`\n", "- [ ] foo\n  `abcdef1` bar passed\n")
+        self.assertEqual(fx("\ufeffThe template passed\n", self.P, frozenset({"The template passed"})), "\ufeffThe template passed\n")
+
+    def test_text_next_to_a_cut_out_comment_is_left_alone(self):
+        self.same("<!-- a\nb -->`abcdef1`\n", "pre <!-- c\nd --> post `abcdef1`\n")
+        self.assertEqual(fx("-->\nfoo `abcdef1`\n"), "-->\nfoo abcdef1\n")
+
+    def test_stray_and_escaped_backticks_make_a_block_untouchable(self):
+        self.same("a ` b passed c", "\\`abcdef1`\n", "a `` b passed\n")
+
+    def test_new_code_never_joins_old_code(self):
+        self.same("passed`x`\n", "`x`passed")
+        self.assertEqual(fx('"test_x""test_y"', self.P), '`test_x`"test_y"')
+        self.assertEqual(fx(fx('"test_x""test_y"', self.P), self.P), '`test_x`"test_y"')
+
+    def test_a_stray_quote_mark_does_not_make_a_second_run_change_more(self):
+        for d in ('Fixed in b] " `https://e.com/a`\n"test_a" tail.\n', 'He said " and `abcdef1` then "test_a" end.\n'):
+            once = fx(d, self.P)
+            self.assertEqual(fx(once, self.P), once, d)
+
+    def test_a_quote_mark_inside_code_does_not_pair_with_real_quotes(self):
+        self.same('Use `"` here: "x `abcdef1` y"\n')
+
+    def test_a_lone_sha_in_a_wrapped_paragraph_is_still_fixed(self):
+        self.assertEqual(fx("A long line that\nsays `abcdef1` and\npassed.\n", self.P), "A long line that\nsays abcdef1 and\n`passed`.\n")
+
+    def test_the_diff_of_many_far_apart_hunks_is_made_in_linear_time(self):
+        d = ("`abcdef1`\n\n\n\n" * 20000)[:260000]
+        r = furbish.fix_text(d)
+        t = time.perf_counter()
+        rows = furbish._hunks(r.old, r.new, r.tags)
+        self.assertLess(time.perf_counter() - t, 1.0)
+        self.assertGreater(len(rows), 20000)
+
+    def test_a_check_name_must_start_with_a_letter_or_a_digit(self):
+        with self.assertRaises(furbish.ConfigError) as cm:
+            furbish._validate_code_names({"checks": [".NET build"]}, "a/b")
+        self.assertIn(".NET build", str(cm.exception))
+        with self.assertRaises(furbish.ConfigError):
+            furbish._validate_code_names({"states": [""]}, "a/b")
+        self.assertEqual(furbish._validate_code_names({"checks": ["C++ build", "3.11 tests"]}, "a/b")["checks"], ["C++ build", "3.11 tests"])
+
+    def test_only_test_like_quoted_names_become_code(self):
+        p = {"code_names": {"quoted_tests": True}}
+        for t in ('The "Testimony" and "Test" and "testing" words.', 'A "foo.bar" name.'):
+            self.assertEqual(fx(t + "\n", p), t + "\n", t)
+        self.assertEqual(fx('The "TestOpen" and "testOpen" and "Test1" cases.\n', p), "The `TestOpen` and `testOpen` and `Test1` cases.\n")
 
 
 class TestFixCli(ConfigCase):
