@@ -758,6 +758,12 @@ class TestCheckCli(ConfigCase):
         self.assertEqual(self.run_check(path).returncode, 0)
         self.assertEqual(self.run_check("--post", path).returncode, 1)
 
+    def test_text_prints_the_flagged_sentence_under_its_problem(self):
+        path = self.draft(HARD + "\n")
+        out = self.run_check("--post", "--text", path).stdout.splitlines()
+        self.assertEqual(out[1], "    " + HARD)
+        self.assertEqual(len(self.run_check("--post", path).stdout.splitlines()), 1)
+
     def test_the_default_repo_profile_applies(self):
         cfg = self.write('default_repo = "a/b"\n[repo."a/b"]\nfooter = "^END$"\n[repo."c/d"]\n', "cfg.toml")
         path = self.draft("Body.\n")

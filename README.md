@@ -7,7 +7,7 @@ Checks and tidies GitHub PR and issue drafts before they're posted: plain words,
 
 ## What it does
 
-- `furbish check DRAFT [--repo owner/name] [--post]`: prints only the problems, with the line and sentence id (like S12). Silent on a pass. Exit 0 pass, 1 problems found, 2 could not run. Reading-grade checks run only with `--post`. It needs no config, but the footer, TL;DR, banned phrases, private text and first-line rules come from [your config](CONFIG.md), which can also name outside checkers such as Vale to run on the draft.
+- `furbish check DRAFT [--repo owner/name] [--post] [--text]`: prints only the problems, with the line and sentence id (like S12). Silent on a pass. Exit 0 pass, 1 problems found, 2 could not run. Reading-grade checks run only with `--post`. It needs no config, but the footer, TL;DR, banned phrases, private text and first-line rules come from [your config](CONFIG.md), which can also name outside checkers such as Vale to run on the draft.
 - `furbish fix DRAFT [--repo owner/name] [--write]`: safe mechanical edits, shown as a diff unless `--write`. It takes the backticks off a commit sha or URL that sits alone in them, puts the blank lines GitHub needs inside `<details>`, and, if your config turns on `code_names`, puts quoted test names, CI check names and CI states in inline code. It never touches code blocks, comments, tables, quotes, link text, headings, checkboxes, template lines or the footer, and a second run changes nothing. A paragraph that holds something furbish can't read safely (a stray backtick, a table row, a link or quote that runs over several lines, indented code, a comment on one of its lines) is left alone whole. Exit 0 done (and silent when there is nothing to fix), 1 refused, 2 could not run.
 - `furbish set DRAFT S12 "text" [--repo owner/name] [--write]`: replaces one sentence by its id, the id `check` prints. The new sentence must keep every number, commit sha and inline-code span of the old one, and under a heading your config lists in `keep_negation` it must keep its negation, so a step that never ran can't be reworded into one that did. It shows the change as a diff and writes the file only with `--write`. Exit 0 done, 1 refused, 2 could not run.
 - `furbish split DRAFT [--repo owner/name]`: for each sentence that reads at grade 10 or harder, suggests where to cut it in two, but only when both halves read easier. It cuts at a semicolon, a spaced dash, or a comma before and, but, so, or or yet, never inside code, links, URLs or quotes, never inside a bracket or emphasis left open, and never in a sentence where a quote starts or ends outside it. It only suggests and never changes the draft; apply a suggestion with `set`. Silent when it has nothing to suggest. Exit 0, or 2 when it could not run.
@@ -41,7 +41,7 @@ draft.md:3: @someone is an @ mention, which pings that person
 draft.md:5: c1217e711 is a commit sha in backticks; write it bare, because GitHub only links a bare sha
 ```
 
-Add `--post` just before a post goes up to grade the reading level too, and `--repo owner/name` to pick a profile from your [config](CONFIG.md). `--help` and `--version` work too.
+Add `--post` just before a post goes up to grade the reading level too, `--text` to print each flagged sentence under its problem, and `--repo owner/name` to pick a profile from your [config](CONFIG.md). `--help` and `--version` work too.
 
 `split` prints the id of a hard sentence and the two sentences it would make:
 

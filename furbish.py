@@ -1569,11 +1569,17 @@ def _run_check(args):
         print(f"furbish: {_plain(str(e))}", file=sys.stderr)
         return 2
     problems.sort(key=lambda p: p.line)
+    said = {}
+    if args.text:
+        lines = text.replace("\r\n", "\n").split("\n")
+        said = {x.sentence.id: x.sentence.text for x in _sentences(lines, (profile or {}).get("footer"))}
     for p in problems:
         shown = _plain(args.draft)
         where = f"{shown}:{p.line}: " if p.line else f"{shown}: "
         sid = f"{p.sid}: " if p.sid else ""
         print(f"{where}{sid}{_plain(p.message)}")
+        if p.sid in said:
+            print(f"    {_plain(said[p.sid])}")
     return 1 if problems else 0
 
 
@@ -1693,6 +1699,7 @@ def main():
     ck.add_argument("draft", help="the draft file to check")
     ck.add_argument("--repo", metavar="OWNER/NAME", help="the repo profile from the config file to use; without it, default_repo is used")
     ck.add_argument("--post", action="store_true", help="also grade the reading level, as you would just before a post goes up")
+    ck.add_argument("--text", action="store_true", help="print each flagged sentence, indented, under its problem")
     st = sub.add_parser("set", help="replace one sentence by its id", description="Replaces one sentence of a draft, found by the id that furbish check prints (S12). The new sentence must keep every number, commit sha and inline-code span of the old one, and under a heading from keep_negation it must keep its negation. Prints the change as a diff, and writes the file only with --write. Exits 0 on success, 1 when the new sentence is refused and 2 when it cannot run.")
     st.add_argument("draft", help="the draft file to change")
     st.add_argument("sid", metavar="ID", help="the sentence id, for example S12")
