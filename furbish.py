@@ -5,7 +5,6 @@ from collections import namedtuple
 __version__ = "0.1.0.dev0"
 
 PLANNED = """planned commands, not working yet:
-  fix DRAFT [--write]    planned: safe mechanical edits, shown as a diff unless --write
   split DRAFT            planned: suggest where to split long sentences"""
 
 Sentence = namedtuple("Sentence", "id line text grade")
@@ -788,17 +787,21 @@ def _rule_spdx(outside):
     return out
 
 
-def _rule_details(lines, outside):
+def _details_gaps(lines, outside):
     out = []
     for no, line in outside:
         if "</" not in line:
             continue
         low = _mask_code(line).lower()
         if "</summary>" in low and no < len(lines) and lines[no].strip():
-            out.append(Problem(no, "", "details-blank", "a blank line is needed after </summary> or the text inside will not display"))
+            out.append((no, "after"))
         if "</details>" in low and no > 1 and lines[no - 2].strip():
-            out.append(Problem(no, "", "details-blank", "a blank line is needed before </details> or the text inside will not display"))
+            out.append((no, "before"))
     return out
+
+
+def _rule_details(lines, outside):
+    return [Problem(no, "", "details-blank", f"a blank line is needed {side} {'</summary>' if side == 'after' else '</details>'} or the text inside will not display") for no, side in _details_gaps(lines, outside)]
 
 
 def _rule_grade(lines, sentences, exempt):
@@ -1105,6 +1108,214 @@ def set_sentence(text, sid, new, profile=None):
     return Edit(joined, l1, lines[l1 - 1:l2], merged)
 
 
+def _quote_spans(text):
+    out = []
+    for o, c in (('"', '"'), ('“', '”')):
+        i = text.find(o)
+        while i != -1:
+            j = text.find(c, i + 1)
+            if j == -1:
+                break
+            out.append((i, j + 1))
+            i = text.find(o, j + 1)
+    return out
+
+
+def _merge(ranges):
+    out = []
+    for s, e in sorted(ranges):
+        if out and s <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], e)
+        else:
+            out.append([s, e])
+    return out
+
+
+def _shield(text, code=True, quotes=True):
+    spans = list(_code_spans(text)) if code else []
+    brackets = [i for i, c in enumerate(text) if c in "[]"]
+    for start, end in _target_spans(text):
+        k = bisect.bisect_left(brackets, start - 1)
+        lo = start
+        if k and text[brackets[k - 1]] == "[":
+            lo = brackets[k - 1]
+        spans.append((lo, end))
+    spans += [m.span() for m in _URL.finditer(text)]
+    spans += [m.span() for m in _TAG.finditer(text)]
+    if quotes:
+        spans += _quote_spans(text)
+    out = list(text)
+    for s, e in _merge(spans):
+        out[s:e] = "\x00" * (e - s)
+    return "".join(out)
+
+
+def _unwrap(text):
+    shield = _shield(text, code=False)
+    found = []
+    for s, e in _code_spans(text):
+        if shield[s] == "\x00":
+            continue
+        span = text[s:e]
+        k = len(span) - len(span.lstrip("`"))
+        content = span[k:len(span) - k].strip()
+        sha_ok = (_SHA_RE.fullmatch(content) and any(c.isdigit() for c in content)
+                  and any(c.isalpha() for c in content))
+        if sha_ok or re.fullmatch(r"https?://\S+", content):
+            found.append((s, e, content))
+    out, pos = [], 0
+    for s, e, content in found:
+        out.append(text[pos:s])
+        out.append(content)
+        pos = e
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def _quoted_tests(text):
+    s = _shield(text, code=True, quotes=False)
+    spans = []
+    for m in re.finditer(r'"([^"\s]{1,200})"|“([^”\s]{1,200})”', s):
+        a, b = m.span()
+        if "\x00" in s[a:b]:
+            continue
+        name = text[a + 1:b - 1]
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:(?:::|\.|/)[A-Za-z0-9_]+)*", name) and (
+                "_" in name or "::" in name or name.lower().startswith("test")):
+            spans.append((a, b, "`" + name + "`"))
+    out, pos = [], 0
+    for a, b, rep in spans:
+        out.append(text[pos:a])
+        out.append(rep)
+        pos = b
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def _wrap_names(text, index):
+    s = _shield(text)
+    spans, last = [], 0
+    for m in re.finditer(r"\w+(?:[-.]\w+)*", s):
+        a = m.start()
+        if a < last:
+            continue
+        for name in index.get(m.group(), ()):
+            b = a + len(name)
+            if s.startswith(name, a) and (b == len(s) or not (s[b].isalnum() or s[b] in "_-")):
+                spans.append((a, b))
+                last = b
+                break
+    return _edit(text, spans, lambda span: "`" + span + "`")
+
+
+def _name_index(names):
+    index = {}
+    for name in names:
+        if not name:
+            continue
+        m = re.match(r"\w+(?:[-.]\w+)*", name)
+        if not m or not name.startswith(m.group()):
+            continue
+        index.setdefault(m.group(), []).append(name)
+    for group in index.values():
+        group.sort(key=len, reverse=True)
+    return index
+
+
+Fixed = namedtuple("Fixed", "text old new tags")
+
+
+def _same_structure(old, new):
+    if _fence_open(old) != _fence_open(new):
+        return False
+    a, b = _comments(old), _comments(new)
+    if a[1] != b[1] or (a[0] == old) != (b[0] == new):
+        return False
+    return ("<summary" in _mask_code(old).lower()) == ("<summary" in _mask_code(new).lower())
+
+
+def fix_text(text, profile=None, exempt=frozenset()):
+    p = profile or {}
+    raw = text.split("\n")
+    crs = [l.endswith("\r") for l in raw[:-1]] + [False]
+    lines = [l[:-1] if c else l for l, c in zip(raw, crs)]
+    footer = p.get("footer")
+    cn = p.get("code_names") or {}
+    index = _name_index(list(cn.get("checks") or []) + list(cn.get("states") or []))
+    quoted = bool(cn.get("quoted_tests"))
+    changed = list(lines)
+    blocks = _blocks(lines, footer)
+    for kind, parts, _ in blocks:
+        if kind not in ("para", "list"):
+            continue
+        for k, (no, content, col) in enumerate(parts):
+            if col is None or not content:
+                continue
+            src = lines[no - 1]
+            flat = src.strip()
+            if src[col:col + len(content)] != content or flat in exempt or _CHECKBOX_RE.match(flat):
+                continue
+            if kind == "para" and k == 0 and (src.startswith("\t") or len(src) - len(src.lstrip(" ")) >= 4):
+                continue
+            out = _unwrap(content)
+            if quoted:
+                out = _quoted_tests(out)
+            if index:
+                out = _wrap_names(out, index)
+            if out != content:
+                edited = src[:col] + out + src[col + len(content):]
+                if _same_structure(src, edited):
+                    changed[no - 1] = edited
+    gaps = _details_gaps(lines, list(_outside_code(lines)))
+    before = {no for no, side in gaps if side == "before" and _HTML_ONLY.fullmatch(lines[no - 1].strip())}
+    after = {no for no, side in gaps if side == "after" and (_HTML_ONLY.fullmatch(lines[no - 1].strip()) or "<summary" in _mask_code(lines[no - 1]).lower())}
+    new, ends, tags = [], [], []
+    for i, line in enumerate(changed):
+        if (i + 1) in before or i in after:
+            new.append("")
+            ends.append(crs[i - 1])
+            tags.append(("+", None))
+        new.append(line)
+        ends.append(crs[i])
+        tags.append(("=" if line == lines[i] else "~", i))
+    if new != lines:
+        shape = lambda b: [(kind, level, len(parts)) for kind, parts, level in b]
+        if shape(_blocks(new, footer)) != shape(blocks):
+            raise Refused(["the changes would alter how the draft is built, so furbish changed nothing"])
+    joined = "\n".join(l + "\r" if c else l for l, c in zip(new, ends))
+    return Fixed(joined, lines, new, tags)
+
+
+def _hunks(old, new, tags, context=1):
+    last = len(new) - 1 if new and new[-1] == "" and tags[-1][0] == "=" else len(new)
+    spans = []
+    for k in range(last):
+        if tags[k][0] != "=":
+            a, b = max(0, k - context), min(last, k + context + 1)
+            if spans and a <= spans[-1][1]:
+                spans[-1][1] = b
+            else:
+                spans.append([a, b])
+    out = []
+    for a, b in spans:
+        before = sum(1 for t, _ in tags[:a] if t != "+")
+        count = sum(1 for t, _ in tags[a:b] if t != "+")
+        body, gone, came = [], [], []
+        for k in range(a, b):
+            tag, oi = tags[k]
+            if tag == "=":
+                body += ["-" + _plain(x) for x in gone] + ["+" + _plain(x) for x in came] + [" " + _plain(new[k])]
+                gone, came = [], []
+                continue
+            if tag == "~":
+                gone.append(old[oi])
+            came.append(new[k])
+        body += ["-" + _plain(x) for x in gone] + ["+" + _plain(x) for x in came]
+        out.append(f"@@ -{before + 1 if count else before},{count} +{a + 1},{b - a} @@")
+        out += body
+    return out
+
+
 def _read_text(path, strict=False):
     try:
         with open(path, "rb") as f:
@@ -1211,6 +1422,34 @@ def _run_set(args):
     return 0
 
 
+def _run_fix(args):
+    shown = _plain(args.draft)
+    try:
+        path = find_config(os.environ)
+        config = load_config(path) if path else None
+        profile = pick_profile(config, args.repo)
+        exempt = _template_lines(profile)
+        text = _read_text(args.draft, True)
+        fixed = fix_text(text, profile, exempt)
+        if fixed.text != text and args.write:
+            _write_text(args.draft, fixed.text)
+    except Refused as e:
+        for reason in e.reasons:
+            print(f"{shown}: {_plain(reason)}", file=sys.stderr)
+        return 1
+    except ConfigError as e:
+        print(f"furbish: {_plain(str(e))}", file=sys.stderr)
+        return 2
+    if fixed.text == text:
+        return 0
+    print(f"--- {shown}\n+++ {shown}")
+    for row in _hunks(fixed.old, fixed.new, fixed.tags):
+        print(row)
+    if not args.write:
+        print("furbish: nothing was written; add --write to change the file", file=sys.stderr)
+    return 0
+
+
 def main():
     argv = sys.argv[1:]
     ap = argparse.ArgumentParser(prog="furbish", description="Checks and tidies GitHub PR and issue drafts before they're posted: plain words, house rules, safe fixes. Script-first and offline.", epilog=PLANNED, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1226,6 +1465,10 @@ def main():
     st.add_argument("text", help="the new sentence, as one line; put -- before it if it starts with a dash")
     st.add_argument("--repo", metavar="OWNER/NAME", help="the repo profile from the config file to use; without it, default_repo is used")
     st.add_argument("--write", action="store_true", help="change the file; without it nothing is written")
+    fi = sub.add_parser("fix", help="make the safe mechanical edits to a draft", description="Makes the safe mechanical edits to the prose of a draft: takes the backticks off a lone commit sha or URL, puts a blank line inside <details> where GitHub needs one, and, if the repo profile has code_names, turns quoted test names, CI check names and CI states into inline code. It never touches code blocks, comments, tables, quotes, link text, headings, checkboxes, template lines or the footer. Prints the changes as a diff, and writes the file only with --write. Exits 0 when it is done (and prints nothing when there is nothing to fix), 1 when it refuses to change a draft and 2 when it cannot run.")
+    fi.add_argument("draft", help="the draft file to change")
+    fi.add_argument("--repo", metavar="OWNER/NAME", help="the repo profile from the config file to use; without it, default_repo is used")
+    fi.add_argument("--write", action="store_true", help="change the file; without it nothing is written")
     if not argv:
         ap.print_help(sys.stderr)
         return 2
@@ -1234,6 +1477,8 @@ def main():
         return _run_check(args)
     if args.command == "set":
         return _run_set(args)
+    if args.command == "fix":
+        return _run_fix(args)
     return 0
 
 

@@ -818,7 +818,8 @@ class TestCheckCli(ConfigCase):
         self.assertIn("check", r.stdout)
         self.assertNotIn("planned: print only the problems", r.stdout)
         self.assertNotIn("planned: replace one sentence", r.stdout)
-        self.assertIn("planned: safe mechanical edits", r.stdout)
+        self.assertIn("planned: suggest where to split", r.stdout)
+        self.assertNotIn("planned: safe mechanical edits", r.stdout)
 
 
 LINES_SCRIPT = """import sys
@@ -1761,6 +1762,301 @@ class TestSetTiming(ConfigCase):
             self.assertLess(time.perf_counter() - t, 2.0, d[:14])
             self.assertIn(r.returncode, (0, 1, 2), d[:14])
             self.assertNotIn("Traceback", r.stderr, d[:14])
+
+
+CN = {"code_names": {"quoted_tests": True, "checks": ["Example lint", "Example unit tests"], "states": ["passed", "failed", "skipped"]}}
+
+
+def fx(text, profile=None, exempt=frozenset()):
+    return furbish.fix_text(text, profile, exempt).text
+
+
+class TestFixText(unittest.TestCase):
+    def test_a_lone_sha_loses_its_backticks(self):
+        self.assertEqual(fx("Fixed in `abc1234` today.\n"), "Fixed in abc1234 today.\n")
+        self.assertEqual(fx("Fixed in `0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b` today.\n"), "Fixed in 0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b today.\n")
+        self.assertEqual(fx("Fixed in ``abc1234`` and ` def5678 `.\n"), "Fixed in abc1234 and def5678.\n")
+
+    def test_other_code_spans_are_left_alone(self):
+        for t in ("The `deadbeef` and `12345678` and `abcdef` words.", "Use `ABCDEF1234` here.", "Run `git show abc1234` now.", "Run `curl https://example.com` now.", "A `abc1234 def5678` pair.", "The `--flag` option."):
+            self.assertEqual(fx(t + "\n"), t + "\n", t)
+
+    def test_a_lone_url_loses_its_backticks(self):
+        self.assertEqual(fx("See `https://example.com/a` and `http://x.y/z`.\n"), "See https://example.com/a and http://x.y/z.\n")
+
+    def test_code_is_never_touched_where_it_is_not_prose(self):
+        draft = "```\nFixed in `abc1234` with `https://example.com`.\n```\n\n~~~\n`abc1234`\n~~~\n\n<!-- `abc1234` -->\n\n| `abc1234` | b |\n\n> Quoted `abc1234` text.\n\n    Indented `abc1234` text.\n"
+        self.assertEqual(fx(draft), draft)
+
+    def test_link_text_and_quotes_and_headings_and_checkboxes_are_left_alone(self):
+        for t in ("See [`abc1234`](https://example.com/x) now.", 'He said "see `abc1234`" there.', "### Fixed in `abc1234`", "- [x] Fixed in `abc1234`", "- [ ] Fixed in `abc1234`"):
+            self.assertEqual(fx(t + "\n"), t + "\n", t)
+
+    def test_a_line_with_a_comment_cut_out_of_it_is_left_alone(self):
+        for t in ("Fixed in `abc1234` <!-- c --> now.", "<!-- c --> Fixed in `abc1234`."):
+            self.assertEqual(fx(t + "\n"), t + "\n", t)
+        self.assertEqual(fx("<!--\nnote\n--> Fixed in `abc1234` now.\n"), "<!--\nnote\n--> Fixed in abc1234 now.\n")
+
+    def test_the_footer_and_template_lines_are_left_alone(self):
+        footer = r"^-- Sent with `abc1234`$"
+        draft = "Fixed in `abc1234`.\n\n-- Sent with `abc1234`\n"
+        self.assertEqual(fx(draft, {"footer": footer}), "Fixed in abc1234.\n\n-- Sent with `abc1234`\n")
+        self.assertEqual(fx("Fixed in `abc1234` again.\n", None, frozenset({"Fixed in `abc1234` again."})), "Fixed in `abc1234` again.\n")
+
+    def test_blank_lines_go_into_details(self):
+        self.assertEqual(fx("<details>\n<summary>Test setup</summary>\nText here.\n</details>\n"), "<details>\n<summary>Test setup</summary>\n\nText here.\n\n</details>\n")
+        self.assertEqual(fx("<details>\n<summary>x</summary>\n</details>\n"), "<details>\n<summary>x</summary>\n\n</details>\n")
+        self.assertEqual(fx("<details><summary>x</summary>\nText.\n</details>\n"), "<details><summary>x</summary>\n\nText.\n\n</details>\n")
+
+    def test_details_that_are_already_fine_or_not_real_are_left_alone(self):
+        fine = "<details>\n<summary>x</summary>\n\nText.\n\n</details>\n"
+        self.assertEqual(fx(fine), fine)
+        for t in ("```\n<summary>x</summary>\nText\n</details>\n```\n", "A `</details>` span.\nNext.\n", "<!--\n</summary>\nText\n-->\n"):
+            self.assertEqual(fx(t), t, t)
+
+    def test_the_blank_line_takes_the_line_ending_of_its_neighbour(self):
+        self.assertEqual(fx("<summary>x</summary>\r\nText.\r\n</details>\r\n"), "<summary>x</summary>\r\n\r\nText.\r\n\r\n</details>\r\n")
+        self.assertEqual(fx("<summary>x</summary>\nText.\r\n</details>"), "<summary>x</summary>\n\nText.\r\n\r\n</details>")
+
+    def test_line_endings_survive_an_edit(self):
+        self.assertEqual(fx("One `abc1234`.\r\nTwo `def5678`.\nThree.\r\n"), "One abc1234.\r\nTwo def5678.\nThree.\r\n")
+
+    def test_no_code_names_means_none_are_applied(self):
+        d = 'The "test_open_file" test passed.\n'
+        for prof in (None, {}, {"code_names": {}}, {"code_names": {"quoted_tests": False, "checks": [], "states": []}}):
+            self.assertEqual(fx(d, prof), d)
+
+    def test_quoted_test_names_become_code(self):
+        p = {"code_names": {"quoted_tests": True, "checks": [], "states": []}}
+        self.assertEqual(fx('The "test_open_file" test.\n', p), "The `test_open_file` test.\n")
+        self.assertEqual(fx("The \u201cTestOpen\u201d test.\n", p), "The `TestOpen` test.\n")
+        self.assertEqual(fx('A "tests/test_x.py::test_a" case.\n', p), "A `tests/test_x.py::test_a` case.\n")
+        for t in ('Say "hello" and "foo.bar" and "Test open".', 'See [the "test_x" doc](https://example.com).', 'A `"test_x"` span.', 'He said "test_x y" ok.', '> A "test_x" quote.', '| "test_x" | b |', '### The "test_x" part', '- [ ] The "test_x" box'):
+            self.assertEqual(fx(t + "\n", p), t + "\n", t)
+
+    def test_quoted_tests_off_leaves_quotes_alone(self):
+        p = {"code_names": {"quoted_tests": False, "checks": ["Example lint"], "states": []}}
+        self.assertEqual(fx('The "test_open_file" test and Example lint.\n', p), 'The "test_open_file" test and `Example lint`.\n')
+
+    def test_check_names_and_states_become_code_in_prose(self):
+        self.assertEqual(fx("Example lint passed and Example unit tests failed.\n", CN), "`Example lint` `passed` and `Example unit tests` `failed`.\n")
+        self.assertEqual(fx("- Linux skipped.\n", CN), "- Linux `skipped`.\n")
+        self.assertEqual(fx("**passed**\n", CN), "**`passed`**\n")
+
+    def test_the_longest_name_wins(self):
+        p = {"code_names": {"checks": ["Example", "Example lint"], "states": []}}
+        self.assertEqual(fx("Example lint ran. Example ran.\n", p), "`Example lint` ran. `Example` ran.\n")
+
+    def test_names_need_whole_words_in_the_same_case(self):
+        for t in ("It unpassed, pre-passed, passedly, and Passed.", "The Example linter and Example lint-all.", "Example lints."):
+            self.assertEqual(fx(t + "\n", CN), t + "\n", t)
+
+    def test_names_are_left_alone_in_code_links_urls_quotes_tables_headings_and_templates(self):
+        for t in ("See [passed](https://example.com/passed) now.", "See https://example.com/passed now.", "It `passed` already.", 'She said "passed" twice.', "| passed | failed |", "### Tests passed", "> It passed.", "- [x] It passed.", "<b title=\"passed\">tag</b>", "<https://example.com/passed>"):
+            self.assertEqual(fx(t + "\n", CN), t + "\n", t)
+        self.assertEqual(fx("It passed here.\n", CN, frozenset({"It passed here."})), "It passed here.\n")
+
+    def test_a_quoted_test_name_is_code_before_names_are_looked_for(self):
+        self.assertEqual(fx('The "test_passed" test passed.\n', CN), "The `test_passed` test `passed`.\n")
+
+    def test_names_inside_a_wrapped_paragraph_are_found_line_by_line(self):
+        self.assertEqual(fx("It was a\nlong run that passed\nand then failed.\n", CN), "It was a\nlong run that `passed`\nand then `failed`.\n")
+
+    def test_fixing_twice_changes_nothing_more(self):
+        d = "<details>\n<summary>Setup</summary>\nFixed in `abc1234`, see `https://example.com/a`.\nThe \"test_a\" test passed; Example lint failed.\n</details>\n\n```\npassed\n```\n"
+        once = fx(d, CN)
+        self.assertNotEqual(once, d)
+        self.assertEqual(fx(once, CN), once)
+
+    def test_the_draft_keeps_its_shape(self):
+        d = "# Title\n\nFixed in `abc1234`. It passed.\n\n- Item `def5678` failed.\n- Another one.\n\n> Quote passed.\n\n<details>\n<summary>x</summary>\nIn here.\n</details>\n"
+        shape = lambda t: [(k, lv, len(parts)) for k, parts, lv in furbish._blocks(t.split("\n"), None)]
+        self.assertEqual(shape(fx(d, CN)), shape(d))
+
+    def test_random_drafts_keep_their_shape_and_are_fixed_once(self):
+        import random
+        rnd = random.Random(7)
+        bits = ["Fixed in", "`abc1234`", "`https://e.com/a`", "passed", "failed", "Example lint", '"test_a"', "[l](https://e.com)", "[`abc1234`](u)", "<details>", "</details>", "<summary>x</summary>", "</summary>", "```", "<!--", "-->", "> q", "| a |", "- item", "1. item", "# Head", "---", "===", "", "", "\t", "  ", "text here.", "More words.", "`x`", "``", "\u201ctest_b\u201d", "- [ ] box", "<b>", "</b>", "@someone", "`https://e.com/<!--`", "`https://e.com/<summary>`", "<summary>", "~~~"]
+        shape = lambda t: [(k, lv, len(parts)) for k, parts, lv in furbish._blocks(t.split("\n"), None)]
+        refused = 0
+        for _ in range(1500):
+            d = "\n".join(" ".join(rnd.choice(bits) for _ in range(rnd.randint(0, 5))) for _ in range(rnd.randint(1, 9))) + "\n"
+            try:
+                once = fx(d, CN)
+            except furbish.Refused:
+                refused += 1
+                continue
+            self.assertEqual(shape(once), shape(d), d)
+            self.assertEqual(fx(once, CN), once, d)
+        self.assertLessEqual(refused, 3)
+
+    def test_hostile_text_stays_fast(self):
+        names = {"code_names": {"quoted_tests": True, "checks": [f"Check number {i}" for i in range(30)], "states": ["passed", "failed", "skipped"]}}
+        cases = ["`a` " * 65000, "[a" * 130000, "[a](" * 65000, '"a ' * 86000, "<a " * 86000, "http://a " * 30000, "word " * 52000, "`abc1234` " * 28000, "passed " * 37000, '"test_a" ' * 28000, "\u201c" * 130000, "Check number 1 " * 17000, "a" + "`" * 200000, "![a" * 86000, "</summary>\ntext\n" * 17000, "<details>\n" * 26000, "Yes. " * 52000, "- a b c.\n" * 30000]
+        for d in cases:
+            t = time.perf_counter()
+            fx(d, names)
+            self.assertLess(time.perf_counter() - t, 2.0, d[:14])
+
+    def test_a_262_kb_draft_is_fixed_in_under_a_second(self):
+        with open(os.path.join(DRAFTS, "pr-body.md"), encoding="utf-8") as f:
+            body = f.read()
+        big = (body * (262000 // len(body) + 1))[:262000]
+        names = {"footer": FOOTER, "code_names": {"quoted_tests": True, "checks": [f"Check number {i}" for i in range(30)], "states": ["passed", "failed", "skipped"]}}
+        t = time.perf_counter()
+        fx(big, names)
+        self.assertLess(time.perf_counter() - t, 1.0)
+
+
+class TestFixCli(ConfigCase):
+    DRAFT = "<details>\n<summary>Setup</summary>\nFixed in `abc1234`.\n</details>\n"
+
+    def env(self, **extra):
+        e = {"HOME": self.tmp, "PATH": "/usr/bin:/bin"}
+        e.update(extra)
+        return e
+
+    def run_fix(self, *args, cwd=None, **extra):
+        return subprocess.run([sys.executable, "-I", SCRIPT, "fix", *args], capture_output=True, text=True, env=self.env(**extra), cwd=cwd)
+
+    def draft(self, text=None, name="draft.md"):
+        return self.write(self.DRAFT if text is None else text, name)
+
+    def read(self, path):
+        with open(path, "rb") as f:
+            return f.read()
+
+    def test_without_write_it_prints_the_changes_and_touches_nothing(self):
+        path = self.draft()
+        before = self.read(path)
+        r = self.run_fix(path)
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(self.read(path), before)
+        self.assertEqual(r.stdout.splitlines(), [f"--- {path}", f"+++ {path}", "@@ -2,3 +2,5 @@", " <summary>Setup</summary>", "-Fixed in `abc1234`.", "+", "+Fixed in abc1234.", "+", " </details>"])
+        self.assertIn("--write", r.stderr)
+
+    def test_with_write_it_changes_the_file_and_prints_the_same_diff(self):
+        path = self.draft()
+        dry = self.run_fix(path)
+        r = self.run_fix(path, "--write")
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(r.stdout, dry.stdout)
+        self.assertEqual(r.stderr, "")
+        self.assertEqual(self.read(path), b"<details>\n<summary>Setup</summary>\n\nFixed in abc1234.\n\n</details>\n")
+
+    def test_a_clean_draft_prints_nothing_and_exits_0(self):
+        path = self.draft("Nothing to fix here.\n")
+        for extra in ((), ("--write",)):
+            r = self.run_fix(path, *extra)
+            self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
+        self.assertEqual(self.read(path), b"Nothing to fix here.\n")
+
+    def test_running_it_again_after_write_prints_nothing(self):
+        path = self.draft()
+        self.run_fix(path, "--write")
+        r = self.run_fix(path, "--write")
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
+
+    def test_the_repo_profile_turns_on_code_names(self):
+        cfg = self.write('[repo."a/b".code_names]\nstates = ["passed"]\n', "cfg.toml")
+        path = self.draft("It passed.\n")
+        self.assertEqual(self.run_fix(path, FURBISH_CONFIG=cfg).stdout, "")
+        r = self.run_fix(path, "--repo", "a/b", "--write", FURBISH_CONFIG=cfg)
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(self.read(path), b"It `passed`.\n")
+
+    def test_template_lines_from_the_profile_are_left_alone(self):
+        tpl = self.write("It passed here.\n", "tpl.md")
+        cfg = self.write(f'[repo."a/b"]\npr_template = {json.dumps(tpl)}\n[repo."a/b".code_names]\nstates = ["passed"]\n', "cfg.toml")
+        path = self.draft("It passed here.\n\nThen it passed again.\n")
+        self.run_fix(path, "--repo", "a/b", "--write", FURBISH_CONFIG=cfg)
+        self.assertEqual(self.read(path), b"It passed here.\n\nThen it `passed` again.\n")
+
+    def test_the_footer_from_the_profile_is_left_alone(self):
+        cfg = self.write(f'[repo."a/b"]\nfooter = {json.dumps(FOOTER)}\n[repo."a/b".code_names]\nstates = ["passed"]\n', "cfg.toml")
+        path = self.draft("It passed.\n\n-- Sent from the made-up example footer\n")
+        self.run_fix(path, "--repo", "a/b", "--write", FURBISH_CONFIG=cfg)
+        self.assertEqual(self.read(path), b"It `passed`.\n\n-- Sent from the made-up example footer\n")
+
+    def test_things_that_cannot_run_exit_2_with_a_plain_message(self):
+        path = self.draft()
+        for args in ((os.path.join(self.tmp, "missing.md"),), (path, "--repo", "x/y")):
+            r = self.run_fix(*args)
+            self.assertEqual((r.returncode, r.stdout), (2, ""), args)
+            self.assertTrue(r.stderr.startswith("furbish: "), r.stderr)
+            self.assertNotIn("Traceback", r.stderr)
+        self.assertEqual(self.run_fix().returncode, 2)
+
+    def test_a_draft_that_is_not_utf8_is_never_rewritten(self):
+        path = self.draft("")
+        with open(path, "wb") as f:
+            f.write(b"Caf\xe9 `abc1234`.\n")
+        for extra in ((), ("--write",)):
+            r = self.run_fix(path, *extra)
+            self.assertEqual((r.returncode, r.stdout), (2, ""))
+            self.assertIn("UTF-8", r.stderr)
+        self.assertEqual(self.read(path), b"Caf\xe9 `abc1234`.\n")
+
+    def test_control_characters_are_not_printed(self):
+        path = self.draft("Esc \x1b[mred\x1b]t\x07 `abc1234` \u202e done.\n", "d\x1b[31mx.md")
+        r = self.run_fix(path)
+        self.assertEqual(r.returncode, 0)
+        for bad in ("\x1b", "\x07", "\u202e"):
+            self.assertNotIn(bad, r.stdout)
+        self.assertIn("red", r.stdout)
+
+    def test_crlf_and_the_file_mode_survive_a_write_and_nothing_is_left_behind(self):
+        path = self.draft("")
+        with open(path, "wb") as f:
+            f.write(b"One `abc1234`.\r\nTwo.\r\n")
+        os.chmod(path, 0o640)
+        before = sorted(os.listdir(self.tmp))
+        r = self.run_fix(path, "--write")
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(self.read(path), b"One abc1234.\r\nTwo.\r\n")
+        self.assertNotIn("\r", r.stdout)
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o640)
+        self.assertEqual(sorted(os.listdir(self.tmp)), before)
+
+    def test_a_symlinked_draft_is_written_through_the_link(self):
+        real = self.draft("One `abc1234`.\n", "real.md")
+        link = os.path.join(self.tmp, "link.md")
+        os.symlink(real, link)
+        self.assertEqual(self.run_fix(link, "--write").returncode, 0)
+        self.assertTrue(os.path.islink(link))
+        self.assertEqual(self.read(real), b"One abc1234.\n")
+
+    def test_a_relative_path_is_found(self):
+        self.draft("One `abc1234`.\n")
+        self.assertEqual(self.run_fix("draft.md", "--write", cwd=self.tmp).returncode, 0)
+        self.assertEqual(self.read(os.path.join(self.tmp, "draft.md")), b"One abc1234.\n")
+
+    def test_the_diff_shows_context_and_groups_nearby_changes(self):
+        path = self.draft("A `abc1234`.\nB.\nC `def5678`.\nD.\nE.\nF.\nG `0123abc`.\n")
+        r = self.run_fix(path)
+        self.assertEqual(r.stdout.splitlines()[2:], ["@@ -1,4 +1,4 @@", "-A `abc1234`.", "+A abc1234.", " B.", "-C `def5678`.", "+C def5678.", " D.", "@@ -6,2 +6,2 @@", " F.", "-G `0123abc`.", "+G 0123abc."])
+
+    def test_help_lists_fix_as_working(self):
+        r = subprocess.run([sys.executable, "-I", SCRIPT, "--help"], capture_output=True, text=True, env=self.env())
+        self.assertNotIn("planned: safe mechanical edits", r.stdout)
+        self.assertIn("--write", self.run_fix("--help").stdout)
+
+    def test_a_closed_pipe_does_not_lose_the_write(self):
+        path = self.draft("One `abc1234`.\n")
+        cmd = f"set -o pipefail; {shlex.quote(sys.executable)} -I {shlex.quote(SCRIPT)} fix {shlex.quote(path)} --write | head -c0; echo ${{PIPESTATUS[0]}}"
+        r = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, env=self.env())
+        self.assertEqual(r.stdout.strip(), "0")
+        self.assertNotIn("Exception", r.stderr)
+        self.assertEqual(self.read(path), b"One abc1234.\n")
+
+    def test_a_262_kb_draft_through_the_command_takes_under_two_seconds(self):
+        with open(os.path.join(DRAFTS, "pr-body.md"), encoding="utf-8") as f:
+            body = f.read()
+        path = self.draft((body * (262000 // len(body) + 1))[:262000] + "\nFixed in `abc1234`.\n")
+        t = time.perf_counter()
+        r = self.run_fix(path, "--write")
+        self.assertEqual(r.returncode, 0, r.stderr[-300:])
+        self.assertLess(time.perf_counter() - t, 2.0)
 
 
 if __name__ == "__main__":

@@ -3,12 +3,12 @@
 Checks and tidies GitHub PR and issue drafts before they're posted: plain words, house rules, safe fixes. Script-first and offline.
 
 > [!IMPORTANT]
-> **Status: early, being built.** `check`, `set`, `--help` and `--version` work today. Everything marked planned below doesn't run yet.
+> **Status: early, being built.** `check`, `set`, `fix`, `--help` and `--version` work today. Everything marked planned below doesn't run yet.
 
 ## What it does
 
 - `furbish check DRAFT [--repo owner/name] [--post]`: prints only the problems, with the line and sentence id (like S12). Silent on a pass. Exit 0 pass, 1 problems found, 2 could not run. Reading-grade checks run only with `--post`. It needs no config, but the footer, TL;DR, banned phrases, private text and first-line rules come from [your config](CONFIG.md), which can also name outside checkers such as Vale to run on the draft.
-- `furbish fix DRAFT [--write]` (planned): safe mechanical edits, shown as a diff unless `--write`. Never touches code, quotes, tables or the footer.
+- `furbish fix DRAFT [--repo owner/name] [--write]`: safe mechanical edits, shown as a diff unless `--write`. It takes the backticks off a commit sha or URL that sits alone in them, puts the blank lines GitHub needs inside `<details>`, and, if your config turns on `code_names`, puts quoted test names, CI check names and CI states in inline code. It never touches code blocks, comments, tables, quotes, link text, headings, checkboxes, template lines or the footer, and a second run changes nothing. Exit 0 done (and silent when there is nothing to fix), 1 refused, 2 could not run.
 - `furbish set DRAFT S12 "text" [--repo owner/name] [--write]`: replaces one sentence by its id, the id `check` prints. The new sentence must keep every number, commit sha and inline-code span of the old one, and under a heading your config lists in `keep_negation` it must keep its negation, so a step that never ran can't be reworded into one that did. It shows the change as a diff and writes the file only with `--write`. Exit 0 done, 1 refused, 2 could not run.
 - `furbish split DRAFT` (planned): suggests where to split long sentences.
 
@@ -42,6 +42,21 @@ draft.md:5: c1217e711 is a commit sha in backticks; write it bare, because GitHu
 ```
 
 Add `--post` just before a post goes up to grade the reading level too, and `--repo owner/name` to pick a profile from your [config](CONFIG.md). `--help` and `--version` work too.
+
+`fix` shows what it would change in the same way, and changes the file only with `--write`:
+
+```bash
+python3 furbish.py fix draft.md
+python3 furbish.py fix draft.md --write
+```
+
+```
+--- draft.md
++++ draft.md
+@@ -4,1 +4,1 @@
+-Fixed in `c1217e711`.
++Fixed in c1217e711.
+```
 
 `set` changes one sentence. Without `--write` it only shows what would change:
 
