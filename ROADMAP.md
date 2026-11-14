@@ -1,43 +1,57 @@
 # Roadmap
 
-What is done, what is known to be missing, what is planned and what is not coming. What changed, and when, is in [CHANGELOG.md](CHANGELOG.md). Dates are not promised. This is a hobby project.
+This file lists what furbish does, what it gets wrong or doesn't do yet, and what is not coming. What changed, and when, is in [CHANGELOG.md](CHANGELOG.md). Dates are not promised. This is a personal tool.
 
 ## Aims
 
-- standard library only
-- script first
-- no network
-- quiet output: nothing on a pass
-- any model optional and tiny
+furbish tidies GitHub pull request and issue text before it is posted. It is built to:
+
+- use the Python standard library only
+- do the job with scripts first; a model is optional and small
+- never touch the network
+- stay quiet: nothing printed on a pass
+
+## Rules for anything new
+
+- a test on a made-up draft, never a real post
+- a 262 KB draft, GitHub's comment ceiling, still checks in under 1 second
+- anything furbish prints makes sense to someone who has never seen it
+- a word list comes with its licence, read before anything is copied
 
 ## Done
 
-- the repo base: docs, CI on Python 3.11 to 3.14, and a stub that answers `--help` and `--version`
-- the prose reader: `read_prose` skips fenced and indented code, comments, tables (with or without a leading pipe), `<details>` summaries and the footer, reads a raw HTML block (such as `<div>`, up to the next blank line) the way GitHub does, leaves a footnote's `[^1]:` label out of its sentence, and numbers every sentence (S1, S2, …). Grading is a separate step, `_cleaned` and `_hard`, that `check` and `split` share. `check`, `set`, `fix` and `split` all read a draft through it
-- the config loader: `find_config`, `load_config` and `pick_profile` read and check the file and per-repo profiles described in [CONFIG.md](CONFIG.md), and report a mistake with the file's path and the key at fault. `check` reads it
-- **`check`:** `furbish check DRAFT [--repo owner/name] [--post] [--text]` prints only the problems, one per line with its line number and sentence id, and nothing on a pass. The built-in rules: length (a draft over 65,536 bytes of UTF-8 fails on the line where it goes over; GitHub's error message says characters, but which it really counts is not checked, and bytes is the stricter of the two, so a draft that passes fits either way), reading grade with `--post` (grade 10 or more is too hard; headings of every kind, checkboxes, template lines and sentences under three words, counted by the spaces between them, are exempt), the `first_line_prefix`, commit shas in backticks (an upper-case one is told to go lower case too, since GitHub links only a lower-case sha), URLs in backticks, the blank line after a `<details>` summary (not inside a `<pre>`, `<script>`, `<style>` or `<textarea>` block, which GitHub shows as it is), informal licence names instead of SPDX ids (for a GPL name, the id that fits its family and version), `@` mentions (after any punctuation; not in code, links, URLs or an email address), a TL;DR on long posts (`**TL;DR:**` or `**TL;DR**:`) with its word threshold and sentence cap from config, the footer, banned phrases and private text. A 262 KB draft checks in well under a second
-- the outside checkers: `check` runs each `external` entry from the profile after its own rules. `lines` mode reports the output lines matching a fail regex, `json` mode reads Vale's `--output=JSON`, and `harper` mode reads Harper's. A checker is stopped after 60 seconds or 64 MB of output, along with every program it started. All three modes are covered by tests with stand-in checkers, and the real Vale was run through them
-- **`set`:** `furbish set DRAFT S12 "text"` replaces one sentence by the id `check` prints, at its exact place in the file (a wrapped sentence becomes one line, line endings and everything around it are kept). It refuses a rewrite that drops a number, commit sha or inline-code span of the old sentence, or the negation of a sentence under a `keep_negation` heading, or that would change how the rest of the draft reads. It shows a diff and writes only with `--write`, atomically. A 262 KB draft takes about half a second
-- **`fix`:** `furbish fix DRAFT` shows the safe mechanical edits as a diff and writes them only with `--write`: the backticks off a lone lower-case commit sha or URL, the blank line GitHub needs after a `<details>` summary (again not inside a `<pre>` or the like), and, with `code_names` in the profile, quoted test names, CI check names and CI states as inline code. It never touches code, comments, tables, quotes, raw HTML blocks, link text, headings, checkboxes, template lines or the footer, a second run changes nothing (with Harper fixes on, Harper may find one more), and it refuses a change that would alter the draft's blocks. Informal licence names are not fixed: `GPLv2` can mean more than one SPDX id, so `check` flags them and a person picks
-- **`split`:** `furbish split DRAFT` looks at every sentence that reads at grade 10 or harder and prints where it could be cut in two, only when both halves read at least a whole grade easier. The cuts are a semicolon, a spaced dash, and a comma before and, but, so, or or yet; never inside code, links, URLs, tags or quotes, never with a bracket or emphasis left open, not in a sentence where a quote starts or ends outside it, and not in a sentence over 2,000 characters. It only suggests; `set` applies a suggestion
-- **Word lists:** borrowed from proselint (BSD-3-Clause), write-good's too-wordy and weasel-words lists (MIT), GNU diction's clichés (GPL-3.0-or-later) and vale-ai-tells (MIT), each in its own folder under `data/` beside its licence, with a NOTICE. A profile turns them on by name with `words`; `check` flags what it finds in the prose, and with `word_swaps` `fix` makes the one-for-one swaps, never one near a negation or one that breaks "a" or "an". Lookups are dictionary lookups on the first two words, so the whole `check` command takes about 0.2 to 0.25 s on a 262 KB draft with every list on (hyperfine). Only plain phrases were taken, not regular expressions. write-good's list includes its 27 weasel words (vague words such as "very"), from the weasel-words package (MIT)
-- **Harper** (Apache-2.0), the grammar and spelling checker, through `harper-cli` (tested with 3.2.0) in its own `harper` mode, which reads `harper-cli lint --format json`. `fix` applies only the rules a profile lists in the entry's `fix`, and only where Harper offers one suggestion; hunspell stays the plain spelling fallback through `lines` mode
-- **Tests:** made-up drafts only, and a timing test for each command on a 262 KB draft, GitHub's comment ceiling, checked in under 1 second, with hostile floods beside it, and random-draft tests that every command keeps the draft's shape and that `fix` is idempotent
-- **Reviews:** each command was read blind by another model, and the whole project once by a stronger one. Every finding was reproduced before it was fixed and is pinned by a test. The last round found that the readers had drifted apart, so there is now one reader and one grader for every command
+The detail of each piece is in [CHANGELOG.md](CHANGELOG.md).
+
+- [x] The reader: finds the sentences in a draft the way GitHub reads it, skipping code, comments, tables, fold titles and the footer, and numbers them S1, S2 and so on. Every command reads a draft the same way.
+- [x] Config: rules per repo, and per kind of post inside a repo, in one file ([CONFIG.md](CONFIG.md)). A mistake names the file and the setting.
+- [x] `check`: prints only the problems. It covers length, reading grade, shas and links in backticks, blank lines in folds, loose licence names, @ mentions, the TL;DR, the footer, and banned or private words.
+- [x] Outside checkers: Vale, Harper, or any tool that prints one problem per line. Each is stopped after 60 seconds or 64 MB of output.
+- [x] `set`: swaps one sentence by its id, and refuses a rewrite that drops a number, sha, code or a "not" that has to stay.
+- [x] `fix`: only safe, mechanical edits, shown first and written only with `--write`. A second run changes nothing.
+- [x] `split`: suggests where a hard sentence could be cut in two.
+- [x] Word lists from proselint, write-good, GNU diction and vale-ai-tells, off unless a profile turns them on.
+- [x] Harper's grammar checks, with only the fixes a profile allows.
+- [x] Tests on made-up drafts, with a timing test for each command. Every command was read blind by another model, and the whole project once by a stronger one.
 
 ## Known gaps
 
-Things furbish does not do yet, or does in a way a person might not expect. None is a crash or a way to lose text.
+Things furbish gets wrong or doesn't check yet. None of them crashes or loses text.
 
-- **`<pre>` in a list item or a quote:** the details rule knows a `<pre>`, `<script>`, `<style>` or `<textarea>` block only when it starts at the left margin. Inside a list item or a quote, `check` still asks for a blank line after a `<details>` summary in one, and in a list item `fix` adds it, where GitHub would show it as an empty line
-- **Speed:** `set` reads the draft twice, once to find the sentence and once more to make sure the rest still reads the same, and `split` grades both halves of up to six cuts for each hard sentence. Timed with hyperfine on a Ryzen 9 5900X, the whole command takes about 0.75 s for the worst hostile draft found for `set` (52,000 one-word lines) and 0.6 s for `split` (200 long sentences full of places to cut), against 0.17 s for a realistic 262 KB draft. GitHub's CI runners are about twice as slow. A profile found no one slow spot: the time is spread over the shared reader and grader, and the second read is the guard
+- [ ] Text straight after `</details>` with no blank line shows as raw Markdown on GitHub, and nothing checks for it.
+- [ ] A fold with no `<summary>` shows its body as raw Markdown on GitHub, and nothing checks for it.
+- [ ] An empty fold (a summary and nothing else) is asked for a blank line it doesn't need.
+- [ ] A fold inside a quote is flagged even when its `>` line is blank, and `fix` can't clear it.
+- [ ] A `<pre>`, `<script>`, `<style>` or `<textarea>` block is only seen when it starts at the left margin. In a list item or a quote, the fold rule still asks for a blank line inside it, where GitHub would show it as an empty line.
+- [ ] A fold, then a `<script>` holding `<!--`, then a second fold: `fix` needs two runs to finish.
+- [ ] The licence rule reads names inside links and file names (`COPYING.GPLv3`), and takes "Apache 2.4", the web server, for the Apache 2.0 licence.
+- [ ] Speed: on the worst made-up drafts found, `set` takes about 0.75 s and `split` about 0.6 s on a fast desktop, against 0.17 s for a normal 262 KB draft (hyperfine, 14 Nov 2026). GitHub's CI runners are about twice as slow. No single slow spot was found.
 
-## Later
+## Ideas, not decided
 
-- **A tiny local editing model, measured and not wired in.** On 14 Nov 2026 CoEdIT-small and CoEdIT-base (jbochi's Apache-2.0 fine-tunes of Flan-T5), converted with llama.cpp and run on the CPU, were asked to make 50 made-up hard PR sentences easier to read (grade 10 to 25, mean 17.8, each holding code, a number, a version, an issue ref, a commit sha, a path or a URL). They kept every such item in 86 to 88% of sentences, but dropped the backticks from every code span and cut the mean grade by only 0.5 to 1.2. Between 9 and 20 of the 50 came back unchanged, only 2 or 3 came out under grade 10, and at most 1 of those kept everything. A lost item went with a dropped clause, and some rewrites changed the meaning or repeated a clause. About 0.2 s a sentence for small and 0.5 s for base. Not good enough to wire in; `split`, `set` and a person stay the way to cut a hard sentence.
+- A small local model to reword hard sentences. CoEdIT-small and CoEdIT-base were measured on 14 Nov 2026 on 50 made-up hard sentences. They dropped the backticks from every bit of code, lowered the reading grade by only 0.5 to 1.2, and got at most 1 sentence under grade 10 with everything kept. Not good enough to use; `split`, `set` and a person stay the way to fix a hard sentence.
 
-## Not planned
+## Not coming
 
-- other platforms: Discord, chat, email
-- anything that posts for you
-- network features
+- Discord, chat or email. furbish is for GitHub posts only.
+- Posting anything for you.
+- Anything that needs the network.
