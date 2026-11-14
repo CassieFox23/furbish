@@ -869,6 +869,16 @@ def _rule_tldr(lines, outside, sentences, p):
     return []
 
 
+GITHUB_MAX_BODY = 65536
+
+
+def _rule_length(text):
+    if len(text) <= GITHUB_MAX_BODY:
+        return []
+    line = text.count("\n", 0, GITHUB_MAX_BODY) + 1
+    return [Problem(line, "", "length", f"the draft is {len(text):,} characters long and goes over GitHub's limit of {GITHUB_MAX_BODY:,} for one post or comment on this line; cut it down, or move the rest into a second comment")]
+
+
 def _rule_footer(lines, footer):
     if not footer:
         return []
@@ -1023,7 +1033,7 @@ def check(text, profile=None, post=False, exempt=frozenset()):
     need = post or p.get("tldr") == "required" or bool(p.get("banned"))
     located = _sentences(lines, footer) if need else []
     sentences = [x.sentence for x in located]
-    problems = []
+    problems = _rule_length(text)
     problems += _rule_prefix(lines, p.get("first_line_prefix"))
     if p.get("tldr") == "required":
         problems += _rule_tldr(lines, outside, sentences, p)

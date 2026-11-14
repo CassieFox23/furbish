@@ -522,6 +522,41 @@ class TestCheckBasics(unittest.TestCase):
         self.assertEqual(probs("Thanks @someone.\r\n\r\nFixed in `c1217e711`.\r\n"), [(1, "mention"), (3, "sha")])
 
 
+class TestCheckLength(unittest.TestCase):
+    def draft(self, extra, nl="\n"):
+        return ("x" * 99 + nl) * 655 + "y" * 36 + "z" * extra
+
+    def test_a_draft_of_exactly_65536_characters_passes(self):
+        d = self.draft(0)
+        self.assertEqual(len(d), 65536)
+        self.assertEqual(furbish.check(d), [])
+
+    def test_one_character_more_fails_on_the_line_where_it_goes_over(self):
+        d = self.draft(1)
+        (p,) = furbish.check(d)
+        self.assertEqual((p.line, p.sid, p.rule), (656, "", "length"))
+        self.assertIn("65,537 characters", p.message)
+        self.assertIn("65,536", p.message)
+
+    def test_the_line_breaks_are_counted_as_written(self):
+        d = ("x" * 98 + "\r\n") * 655 + "y" * 36
+        self.assertEqual(len(d), 65536)
+        self.assertEqual(furbish.check(d), [])
+        (p,) = furbish.check(d + "z")
+        self.assertEqual((p.line, p.rule), (656, "length"))
+        (p,) = furbish.check(("x" * 99 + "\r\n") * 655)
+        self.assertEqual((p.line, p.rule), (649, "length"))
+
+    def test_the_cli_fails_a_long_draft(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "long.md")
+            with open(path, "w") as f:
+                f.write(self.draft(1))
+            r = subprocess.run([sys.executable, "-I", SCRIPT, "check", path], capture_output=True, text=True, env={"FURBISH_CONFIG": "", "XDG_CONFIG_HOME": d, "HOME": d})
+            self.assertEqual(r.returncode, 1)
+            self.assertIn(":656: the draft is 65,537 characters long", r.stdout)
+
+
 class TestCheckGrade(unittest.TestCase):
     def test_the_sentences_used_below_are_what_they_claim_to_be(self):
         self.assertGreaterEqual(furbish.ari(HARD), 10)

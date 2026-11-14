@@ -18,6 +18,7 @@ Format after [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Kinds: `[repo."owner/name".kinds.NAME]` tables, picked with `--kind NAME` on `check`, `set`, `fix` and `split`, override only the keys they name and take the rest from the repo profile. `grade_skip` lists regexes for lines the reading grade leaves out; every other rule still reads them.
 - `first_line_skip` in a repo profile: a regex for a whole first line, such as a row of badges, that may come before the TL;DR. When the first non-blank line matches it, the TL;DR rule reads the next non-blank line instead.
 - `furbish check --text`: prints each flagged sentence, indented, under its problem, for a tool that rewrites hard sentences and needs their text, not only their id and line.
+- A length rule: `check` fails a draft over 65,536 characters, the limit in GitHub's own error message ("Body is too long (maximum is 65536 characters)"), and gives the line where it goes over. It counts the characters as written, each line break included. Whether GitHub counts bytes instead, which would make the real limit lower for text with accents or emoji, is not checked.
 
 ### Changed
 
