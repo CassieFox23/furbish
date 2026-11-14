@@ -34,7 +34,7 @@ Things furbish does not do yet, or does in a way a person might not expect. None
 
 ## Later
 
-- **A measuring-only experiment** with a tiny local editing model (CoEdIT-small or CoEdIT-base, Apache-2.0, run on the CPU): does it shorten hard sentences without losing code, numbers, issue refs or commit shas? Nothing gets wired in unless the numbers are good.
+- **A tiny local editing model, measured and not wired in.** On 14 Nov 2026 CoEdIT-small and CoEdIT-base (jbochi's Apache-2.0 fine-tunes of Flan-T5), converted with llama.cpp and run on the CPU, were asked to make 50 made-up hard PR sentences easier to read (grade 10 to 25, mean 17.8, each holding code, a number, a version, an issue ref, a commit sha, a path or a URL). They kept every such item in 86 to 88% of sentences, but dropped the backticks from every code span and cut the mean grade by only 0.5 to 1.2. Between 9 and 20 of the 50 came back unchanged, only 2 or 3 came out under grade 10, and at most 1 of those kept everything. A lost item went with a dropped clause, and some rewrites changed the meaning or repeated a clause. About 0.2 s a sentence for small and 0.5 s for base. Not good enough to wire in; `split`, `set` and a person stay the way to cut a hard sentence.
 
 ## Not planned
 
