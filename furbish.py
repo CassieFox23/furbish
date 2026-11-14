@@ -672,7 +672,9 @@ def _validate_profile(profile, repo):
     known = _word_lists()
     for name in words:
         if name not in known:
-            raise ConfigError(f"words in {repo} names {name}, which is not one of furbish's word lists; they are: {', '.join(known) or 'none found'}")
+            if not known:
+                raise ConfigError(f"words in {repo} names {name}, but furbish found no word lists: its data folder should sit next to furbish.py")
+            raise ConfigError(f"words in {repo} names {name}, which is not one of furbish's word lists; they are: {', '.join(known)}")
     word_swaps = profile.get("word_swaps", False)
     _validate_bool("word_swaps", word_swaps, repo)
     code_names = profile.get("code_names", {})
@@ -951,16 +953,16 @@ def _rule_private(lines, phrases):
     return out
 
 
-_DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+_DATA = os.path.join(os.path.dirname(os.path.realpath(__file__)), "data")
 _KIND_SAYS = {
-    "wordy": "is wordy",
-    "redundant": "says the same thing twice",
-    "hedge": "hedges; say it plainly",
-    "cliche": "is a cliché",
-    "jargon": "is jargon",
-    "ai": "is a word or phrase that often marks AI-written text",
-    "opener-so": "at the start of a sentence can usually go",
-    "opener-there": "at the start of a sentence hides who does what; start with that instead",
+    "wordy": ("is wordy", "cut it or use a shorter word"),
+    "redundant": ("says the same thing twice", "cut the extra word"),
+    "hedge": ("hedges", "say it plainly"),
+    "cliche": ("is a cliché", "say what you mean in plain words"),
+    "jargon": ("is jargon", "use a plain word"),
+    "ai": ("is a word or phrase that often marks AI-written text", "say it in your own words"),
+    "opener-so": ("at the start of a sentence can often go", "start with the point"),
+    "opener-there": ("at the start of a sentence hides who does what", "start with that instead"),
 }
 _LISTS = {}
 
@@ -976,24 +978,36 @@ def _word_lists():
 def _load_list(name):
     rows = _LISTS.get(name)
     if rows is None:
+        path = os.path.join(_DATA, name, "words.tsv")
         try:
-            with open(os.path.join(_DATA, name, "words.tsv"), encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 body = f.read()
         except OSError as e:
             raise ConfigError(f"cannot read the word list {name}: {e.strerror or e}") from None
-        rows = _LISTS[name] = [tuple(line.split("\t")) for line in body.splitlines()[1:] if line]
+        except UnicodeDecodeError:
+            raise ConfigError(f"the word list {name} is not UTF-8 text: {path}") from None
+        rows = []
+        for no, line in enumerate(body.splitlines()[1:], 2):
+            if not line:
+                continue
+            row = tuple(line.split("\t"))
+            if len(row) != 3 or not _WORD.match(row[0]) or row[2] not in _KIND_SAYS:
+                raise ConfigError(f"the word list {name} is damaged on line {no}: {path}")
+            rows.append(row)
+        _LISTS[name] = rows
     return rows
 
 
 def _phrase_index(names, swaps=False):
-    index = {}
-    seen = set()
+    best = {}
     for name in names:
         for phrase, swap, kind in _load_list(name):
-            if phrase in seen or (swaps and not swap):
+            if (swaps and not swap) or (phrase in best and (best[phrase][1] or not swap)):
                 continue
-            seen.add(phrase)
-            index.setdefault(tuple(_WORD.findall(phrase)[:2]), []).append((phrase, swap, kind, name))
+            best[phrase] = (phrase, swap, kind, name)
+    index = {}
+    for row in best.values():
+        index.setdefault(tuple(_WORD.findall(row[0])[:2]), []).append(row)
     for group in index.values():
         group.sort(key=lambda r: len(r[0]), reverse=True)
     return index
@@ -1002,15 +1016,20 @@ def _phrase_index(names, swaps=False):
 def _flat(text):
     low = text.lower()
     if len(low) != len(text):
-        return None
+        low = "".join(c if len(c.lower()) != 1 else c.lower() for c in text)
     return low.replace("\u2019", "'").replace("\u02bc", "'")
 
 
-def _inword(c):
-    return c.isalnum() or c in "'-_"
+def _joined_before(low, a):
+    return a > 0 and (low[a - 1].isalnum() or low[a - 1] == "-")
+
+
+def _joined_after(low, b):
+    return b < len(low) and (low[b].isalnum() or low[b] == "-" or (low[b] == "'" and low[b + 1:b + 2].isalpha()))
 
 
 _LEAD = re.compile(r"[\s*_~\"'(\[\u201c]*")
+_ARTICLE = re.compile(r"(?:^|[^\w'-])(an?)[\s*_~(\[\"']+$", re.I)
 
 
 def _phrase_hits(low, index):
@@ -1019,32 +1038,49 @@ def _phrase_hits(low, index):
     words = list(_WORD.finditer(low))
     for i, m in enumerate(words):
         a = m.start()
-        if a < last or (a and _inword(low[a - 1])):
+        if a < last or _joined_before(low, a):
             continue
         w = m.group()
         pair = index.get((w, words[i + 1].group()), ()) if i + 1 < len(words) else ()
         for row in (*pair, *index.get((w,), ())):
             phrase, kind = row[0], row[2]
             b = a + len(phrase)
-            if low.startswith(phrase, a) and (b == len(low) or not _inword(low[b])) and (a == lead or not kind.startswith("opener")):
+            if low.startswith(phrase, a) and not _joined_after(low, b) and (a == lead or not kind.startswith("opener")):
                 yield a, b, row
                 last = b
                 break
 
 
+def _swap_ok(text, a, b, phrase, swap):
+    old = text[a:b]
+    if _negated(old) and not _negated(swap):
+        return False
+    start = max(text.rfind(c, 0, a) for c in ".!?;:") + 1
+    if _negated(text[start:a]):
+        return False
+    article = _ARTICLE.search(text[max(0, a - 20):a])
+    if article:
+        if not (phrase == swap.lower() or phrase.endswith((" " + swap.lower(), "-" + swap.lower()))):
+            return False
+        if (old[0].lower() in "aeiou") != (swap[0].lower() in "aeiou"):
+            return False
+    return True
+
+
 def _rule_words(sentences, index):
     out = []
     for s in sentences:
-        low = _flat(_mask(s.text))
-        if low is None:
-            continue
+        masked = _mask(s.text)
+        masked = _edit(masked, [m.span() for m in _TAG.finditer(masked)], _hide)
         said = set()
-        for a, b, (phrase, swap, kind, name) in _phrase_hits(low, index):
+        for a, b, (phrase, swap, kind, name) in _phrase_hits(_flat(masked), index):
             if phrase in said:
                 continue
             said.add(phrase)
-            then = f'; write "{swap}" instead' if swap else ""
-            out.append(Problem(s.line, s.id, "words", f'"{s.text[a:b]}" {_KIND_SAYS[kind]}{then} (from the {name} word list)'))
+            says, todo = _KIND_SAYS[kind]
+            if swap and _swap_ok(s.text, a, b, phrase, swap):
+                todo = f'write "{swap}" instead'
+            out.append(Problem(s.line, s.id, "words", f'"{s.text[a:b]}" {says}; {todo} (from the {name} word list)'))
     return out
 
 
@@ -1628,21 +1664,17 @@ def _wrap_names(text, index):
 
 
 def _swap_words(text, index):
-    low = _flat(_shield(text))
-    if low is None:
+    if not any(True for _ in _phrase_hits(_flat(text), index)):
         return text
+    low = _flat(_shield(text))
     spans = []
     for a, b, (phrase, swap, kind, name) in _phrase_hits(low, index):
         old = text[a:b]
         if old != low[a:b] and old != low[a].upper() + low[a + 1:b]:
             continue
-        new = swap[0].upper() + swap[1:] if old[0].isupper() else swap
-        article = re.search(r"\b(an?) +$", text[max(0, a - 12):a], re.I)
-        if article and (old[0].lower() in "aeiou") != (new[0].lower() in "aeiou"):
+        if not _swap_ok(text, a, b, phrase, swap):
             continue
-        if _negated(old) and not _negated(new):
-            continue
-        spans.append((a, b, new))
+        spans.append((a, b, swap[0].upper() + swap[1:] if old[0].isupper() else swap))
     out, pos = [], 0
     for a, b, new in spans:
         out.append(text[pos:a])
@@ -1749,12 +1781,12 @@ def fix_text(text, profile=None, exempt=frozenset()):
             out = _unwrap(joined)
             if quoted:
                 out = _quoted_tests(out)
-            if index:
-                out = _wrap_names(out, index)
             if swaps:
                 swapped = _swap_words(out, swaps)
-                if _swap_words(swapped, swaps) == swapped:
+                if swapped == out or _swap_words(swapped, swaps) == swapped:
                     out = swapped
+            if index:
+                out = _wrap_names(out, index)
             pieces = out.split("\n")
             if out == joined or len(pieces) != len(parts):
                 continue

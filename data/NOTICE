@@ -1,6 +1,6 @@
 furbish borrows the word lists in this folder from other projects. Each list sits in its own folder beside the licence it came under. furbish itself is GPL-3.0-only; these lists keep their own licences.
 
-Each words.tsv has three columns: the phrase in lower case, a one-for-one replacement where there is one, and the kind of problem. Only plain phrases were taken. Rules written as regular expressions were left out, and so were a few replacements that change the meaning of a technical sentence.
+Each words.tsv has three columns: the phrase in lower case, a one-for-one replacement where there is one, and the kind of problem. Only plain phrases were taken. Rules written as regular expressions were left out, and so were phrases holding punctuation such as a comma, and a few replacements that change the meaning of a technical sentence or break its grammar.
 
 
 proselint/words.tsv
@@ -9,7 +9,11 @@ From proselint, https://github.com/amperser/proselint, commit dbed789caae662d06c
 BSD-3-Clause, in proselint/LICENSE.md.
 Copyright © 2014–2015, Jordan Suchow, Michael Pacer, and Lara A. Ross
 
-Taken from proselint/checks/: redundancy/garner, redundancy/after-the-deadline, redundancy/misc.py and redundancy/ras_syndrome.py (redundant), misc/composition.py (wordy), hedging.py (hedges), cliches/garner, cliches/diction, cliches/hell.py and cliches/write-good (clichés; proselint credits the last of these to write-good, https://github.com/btford/write-good), and industrial_language/jargon.py, corporate_speak.py and commercialese.py (jargon).
+Taken from proselint/checks/: redundancy/garner, redundancy/after-the-deadline, redundancy/misc.py and redundancy/ras_syndrome.py (redundant), misc/composition.py (wordy), hedging.py (hedges), cliches/garner, cliches/hell.py and cliches/write-good (clichés), and industrial_language/jargon.py, corporate_speak.py and commercialese.py (jargon). proselint's files credit their own sources, among them Garner's Modern American Usage, Strunk and White, Steven Pinker and Richard Nordquist.
+
+proselint credits its cliches/write-good list to write-good, https://github.com/btford/write-good, MIT, Copyright (c) 2014-2019 Brian Ford; that licence is in proselint/LICENSE-write-good.
+
+proselint's cliches/diction list comes from GNU diction, whose licence was not read, so it is not included.
 
 
 write-good/words.tsv
