@@ -1,36 +1,60 @@
 <p align="center"><img src="docs/wordmark.png" alt="furbish" width="492"></p>
 
-Checks and tidies GitHub PR and issue drafts before they're posted: plain words, house rules, safe fixes. Script-first and offline.
+furbish reads a GitHub pull request or issue draft before you post it. It tells you what to fix, and it can make the safe fixes for you. furbish itself never goes online.
 
 > [!IMPORTANT]
-> **Status: early.** `check`, `set`, `fix`, `split`, `--help` and `--version` all work, and so do the borrowed word lists and Harper as an optional grammar checker. What's next is on the [roadmap](ROADMAP.md).
+> **Early days.** Everything below works, but names and options may still change. What's next is in the [roadmap](ROADMAP.md).
 
 ## What it does
 
-- `furbish check DRAFT [--repo owner/name] [--kind NAME] [--post] [--text]`: prints only the problems, with the line and sentence id (like S12). Silent on a pass. A draft over GitHub's limit of 65,536 characters fails. Exit 0 pass, 1 problems found, 2 could not run. Reading-grade checks run only with `--post`. It needs no config, but the footer, TL;DR, banned phrases, private text, word lists and first-line rules come from [your config](CONFIG.md), which can also name outside checkers such as Vale to run on the draft. `--kind NAME` picks a kind inside the repo profile, for another type of post with its own rules (see CONFIG.md).
-- `furbish fix DRAFT [--repo owner/name] [--kind NAME] [--write]`: safe mechanical edits, shown as a diff unless `--write`. It takes the backticks off a commit sha or URL that sits alone in them, puts the blank lines GitHub needs inside `<details>`, and, if your config turns on `code_names`, puts quoted test names, CI check names and CI states in inline code, and with `word_swaps` makes the one-for-one swaps from your word lists, such as "exact same" to "same". With Harper set up, it can also make the Harper fixes your config allows. It never touches code blocks, comments, tables, quotes, link text, headings, checkboxes, template lines or the footer, and a second run changes nothing (with Harper fixes on, Harper may find one more thing in the new text). A paragraph that holds something furbish can't read safely (a stray backtick, a table row, a link or quote that runs over several lines, indented code, a comment on one of its lines) is left alone whole. Exit 0 done (and silent when there is nothing to fix), 1 refused, 2 could not run.
-- `furbish set DRAFT S12 "text" [--repo owner/name] [--kind NAME] [--write]`: replaces one sentence by its id, the id `check` prints. The new sentence must keep every number, commit sha and inline-code span of the old one, and under a heading your config lists in `keep_negation` it must keep its negation, so a step that never ran can't be reworded into one that did. It shows the change as a diff and writes the file only with `--write`. Exit 0 done, 1 refused, 2 could not run.
-- `furbish split DRAFT [--repo owner/name] [--kind NAME]`: for each sentence that reads at grade 10 or harder, suggests where to cut it in two, but only when both halves read easier. It cuts at a semicolon, a spaced dash, or a comma before and, but, so, or or yet, never inside code, links, URLs or quotes, never inside a bracket or emphasis left open, and never in a sentence where a quote starts or ends outside it. It only suggests and never changes the draft; apply a suggestion with `set`. Silent when it has nothing to suggest. Exit 0, or 2 when it could not run.
+furbish has four commands. Each one reads a draft saved as a Markdown file.
 
-It covers GitHub pull request and issue text only: comments, reviews, and bodies. Not Discord, chat or email. Rules come from your own config, so nothing about one project is built in. It never touches the network.
+| Command | What it does |
+|---|---|
+| `check` | Lists the problems in a draft, one per line. Prints nothing if there are none. |
+| `fix` | Shows the safe fixes it can make, and makes them when you add `--write`. |
+| `split` | Points at hard sentences and shows where each could be cut in two. |
+| `set` | Swaps one sentence for wording you give it, and refuses if a number, commit id or bit of code would go missing. |
 
-## Needs
+A typical run: `check`, then `fix`, then `check --post` and `split` just before you post, using `set` for any sentence you reword.
 
-- Python 3.11 or newer, standard library only
-- Optional outside programs (hunspell, vale, harper-cli), run only if your config names them
+With no config at all, `check` looks for:
 
-## Install
+- a draft longer than GitHub allows (65,536 characters)
+- @ mentions, which ping people
+- a commit id (sha) or a web address inside backticks, where GitHub won't turn it into a link
+- a collapsed `<details>` section missing the blank lines GitHub needs
+- a loose GPL, Apache or BSD licence name, like `Apache 2.0` where the standard SPDX id is `Apache-2.0`
+- with `--post`, sentences that read at grade 10 or harder
 
-Nothing to install yet. Clone the repo and run `furbish.py` with Python 3:
+The grade is worked out from word and sentence length, and it's roughly the school year a reader needs (the Automated Readability Index). Headings, checkboxes and sentences under three words are left out.
+
+## Config
+
+The config is optional. It's a TOML file, usually `~/.config/furbish/config.toml`, with a set of rules for each repo:
+
+- a footer, or a TL;DR line at the top
+- words that must never appear, and private text such as your home folder
+- word lists that flag wordy phrases, clichés and words that sound AI-written
+- outside checkers: Vale (a style checker), Harper (a grammar checker) or hunspell (a spell checker), which run as their own programs
+
+[CONFIG.md](CONFIG.md) has the details. Every command takes `--repo owner/name` to pick a repo's rules, and `--kind NAME` for a set of rules inside it, such as one for release notes.
+
+## Getting it
+
+You need Python 3.11 or newer, and nothing else unless your config names an outside checker. Download the repo and run the file with Python, keeping it beside its `data/` folder:
 
 ```bash
 git clone https://github.com/CassieFox23/furbish.git
 cd furbish
+python3 furbish.py --help
 ```
 
-## Use
+It only handles GitHub pull requests and issues: their bodies, comments and reviews. Not Discord, chat or email.
 
-`check` reads a draft file and prints one line per problem. It prints nothing when the draft passes:
+## Using it
+
+### check
 
 ```bash
 python3 furbish.py check draft.md
@@ -41,21 +65,17 @@ draft.md:3: @someone is an @ mention, which pings that person
 draft.md:5: c1217e711 is a commit sha in backticks; write it bare, because GitHub only links a bare sha
 ```
 
-Add `--post` just before a post goes up to grade the reading level too, `--text` to print each flagged sentence under its problem, and `--repo owner/name` to pick a profile from your [config](CONFIG.md). `--help` and `--version` work too.
-
-`split` prints the id of a hard sentence and the two sentences it would make:
-
-```bash
-python3 furbish.py split draft.md
-```
+Each line gives the file, the line number and the problem. Add `--post` just before you post, to grade each sentence too. Those lines also give the sentence's number, like `S1`, which `set` uses:
 
 ```
-draft.md:5: S3: reading grade 15. As two sentences it would read at grade 9 and 5:
-    The loader reads every key and reports each mistake with the path of the file.
-    And the command line prints only the problems that it finds in the draft.
+draft.md:1: S1: the reading grade is 13, which is too hard; every sentence should be under grade 10
 ```
 
-`fix` shows what it would change in the same way, and changes the file only with `--write`:
+Add `--text` to print the sentence itself under each problem that has one.
+
+### fix
+
+`fix` shows what it would change. Nothing is saved until you add `--write`, and it keeps no backup, so commit or copy the draft first:
 
 ```bash
 python3 furbish.py fix draft.md
@@ -65,36 +85,78 @@ python3 furbish.py fix draft.md --write
 ```
 --- draft.md
 +++ draft.md
-@@ -4,1 +4,1 @@
+@@ -4,3 +4,3 @@
+ 
 -Fixed in `c1217e711`.
 +Fixed in c1217e711.
+ 
 ```
 
-`set` changes one sentence. Without `--write` it only shows what would change:
+Lines starting with `-` are the old text and `+` the new. Without `--write` it also says that nothing was written.
+
+On its own it does two things. It takes the backticks off a lone commit id (in lower case) or web address, and it adds the blank lines inside `<details>`. Your config can ask for more:
+
+- test names, CI check names and CI results such as `passed`, put in code formatting
+- a wordy phrase swapped for a shorter one, such as "exact same" to "same"
+- the Harper fixes you allow
+
+It leaves code, comments, tables, quoted text, link text, headings, checkboxes, your template's lines and the footer alone. The one exception: with quoted test names turned on, `"test_open_file"` becomes code. It also skips a paragraph it can't read safely, such as one with a stray backtick, a table row or a comment in it. If an edit would change how the draft is laid out, it changes nothing at all. A second run finds nothing more to do, except that Harper may spot something new in the fixed text.
+
+### split
 
 ```bash
-python3 furbish.py set draft.md S2 "It took 12 seconds."
-python3 furbish.py set draft.md S2 "It took 12 seconds." --write
+python3 furbish.py split draft.md
+```
+
+```
+draft.md:1: S1: reading grade 13. As two sentences it would read at grade 6 and 5:
+    The loader reads every key and reports each mistake with the path of the file.
+    And the command line prints only the problems that it finds in the draft.
+```
+
+It cuts only at a semicolon, a dash with spaces around it, or a comma before "and", "but", "so", "or" or "yet". It never cuts inside code, links or quotes, and only cuts when both halves read easier. It never changes the file. To take a suggestion, give `set` the sentence number and both new sentences in one quoted string.
+
+### set
+
+Sentences are numbered from the top, S1, S2 and so on, leaving out code, tables and the like. `check --post` and `split` print the number of each sentence they flag.
+
+```bash
+python3 furbish.py set draft.md S4 "It took 12 seconds."
+python3 furbish.py set draft.md S4 "It took 12 seconds." --write
 ```
 
 ```
 --- draft.md
 +++ draft.md
-@@ -3,1 +3,1 @@
+@@ -7,1 +7,1 @@
 -It took 12 s and it was slow.
 +It took 12 seconds.
 ```
 
-The new text must be one plain line: no tabs, hidden characters or comments. A sentence that wraps over several lines becomes one line, and `set` refuses a sentence it can't change without losing something in front of it, such as a list marker. With `--write` it also refuses a read-only draft and a draft with more than one name (a hard link), and a draft that is a symlink is changed where the link points. A refusal prints one line per reason, like `draft.md:3: S2: the new sentence drops the number 12`, and writes nothing. If the new text starts with a dash, put `--` before it, and put any option such as `--write` before the `--`: `furbish set draft.md S2 --write -- "-odd one."`.
+The new wording has to keep every number, commit id and bit of code from the old sentence. If it doesn't, `set` says why and saves nothing:
+
+```
+draft.md:7: S4: the new sentence drops the number 12
+```
+
+Your config can mark some headings with `keep_negation`. Under one, a sentence that says no must keep saying it, so "the test did not run" can't become "the test ran". The new text goes on one line. If it starts with a dash and has no spaces, like `-O2.`, put `--` before it, after any options: `python3 furbish.py set draft.md S2 --write -- "-O2."`. A `set` that makes two sentences moves the numbers after it, so run `check` again before the next one.
+
+## Exit codes
+
+| Code | Means |
+|---|---|
+| 0 | all good, or done |
+| 1 | `check` found problems, or `fix` or `set` refused a change |
+| 2 | furbish couldn't run: a mistake in the config, a missing file or a sentence number that isn't there |
 
 ## Help
 
-Questions and bug reports go in [GitHub issues](https://github.com/CassieFox23/furbish/issues).
+Questions and bug reports go in [GitHub issues](https://github.com/CassieFox23/furbish/issues). Security problems don't: see [SECURITY.md](SECURITY.md).
 
 ## Contributing
 
-- Issues and pull requests: [CONTRIBUTING.md](CONTRIBUTING.md)
-- AI tools are fine when you say so: [AI_POLICY.md](AI_POLICY.md)
+- How issues and pull requests work: [CONTRIBUTING.md](CONTRIBUTING.md)
+- AI tools are fine if you say you used them: [AI_POLICY.md](AI_POLICY.md)
 
 ## Licence
 
