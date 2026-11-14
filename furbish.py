@@ -1327,18 +1327,30 @@ def _harper_swaps(item):
     return [m.group(1) for m in (_HARPER_SWAP.fullmatch(x) if isinstance(x, str) else None for x in got) if m]
 
 
+def _harper_case(old, new):
+    if new.isupper() and len(new) > 1 and isinstance(old, str) and not (old.isupper() and len(old) > 1):
+        return new[0] + new[1:].lower()
+    return new
+
+
 def _harper_problems(name, lints):
     problems = []
-    for item in lints:
+    for item in sorted(lints, key=lambda x: (x.get("line") if isinstance(x.get("line"), int) else 0, x.get("column") if isinstance(x.get("column"), int) else 0)):
         line = item.get("line")
         line_num = line if isinstance(line, int) and not isinstance(line, bool) and line >= 0 else 0
         rule = item.get("rule") if isinstance(item.get("rule"), str) else ""
         msg = item.get("message")
         if not isinstance(msg, str) or not msg:
             msg = "reported a problem"
-        swaps = _harper_swaps(item)
-        if swaps:
+        swaps = [_harper_case(item.get("matched_text"), x) for x in _harper_swaps(item)]
+        if len(swaps) == 1:
             msg = f'{msg} It suggests "{swaps[0]}".'
+        elif swaps:
+            shown = [f'"{x}"' for x in swaps[:3]]
+            msg = f"{msg} It suggests {', '.join(shown[:-1])} or {shown[-1]}."
+        old = item.get("matched_text")
+        if isinstance(old, str) and old.strip() and len(old) <= 60:
+            msg = f'"{old}": {msg}'
         problems.append(Problem(line_num, "", name, f"{name}: {msg} ({rule})" if rule else f"{name}: {msg}"))
     return problems
 
@@ -1473,7 +1485,7 @@ def harper_edits(entries, draft_path, timeout=EXTERNAL_TIMEOUT, cap=EXTERNAL_MAX
         for item in _harper_lints(entry["name"], stdout):
             swaps = _harper_swaps(item)
             line, column, old = item.get("line"), item.get("column"), item.get("matched_text")
-            if item.get("rule") in entry["fix"] and len(swaps) == 1 and isinstance(old, str) and old and all(isinstance(x, int) and not isinstance(x, bool) and x >= 1 for x in (line, column)):
+            if item.get("rule") in entry["fix"] and len(swaps) == 1 and len(item["suggestions"]) == 1 and isinstance(old, str) and old and all(isinstance(x, int) and not isinstance(x, bool) and x >= 1 for x in (line, column)):
                 edits.append((line - 1, column - 1, old, swaps[0]))
     return edits
 
@@ -1828,6 +1840,21 @@ def _gapped(lines, crs, exempt, footer=None):
 
 
 _EDIT_MARKUP = re.compile(r"[`*_\[\]<>|#\\~\n\t]")
+_BARE_NT = frozenset(("dont", "doesnt", "didnt", "cant", "couldnt", "wont", "wouldnt", "shouldnt", "isnt", "arent", "wasnt", "werent", "hasnt", "havent", "hadnt", "aint", "mustnt", "neednt"))
+
+
+def _no(text):
+    return _negated(text) or any(w in _BARE_NT for w in _WORD.findall(text.lower()))
+
+
+def _edit_ok(joined, shield, k, old, new):
+    b = k + len(old)
+    if "\x00" in shield[k:b] or not new or _EDIT_MARKUP.search(old) or _EDIT_MARKUP.search(new) or (_no(old) and not _no(new)) or _lost(old, new):
+        return False
+    before, after = joined[k - 1:k], joined[b:b + 1]
+    if before and (before.isalnum() or before in "@#/._-~'"):
+        return False
+    return not (after and (after.isalnum() or after in "/_-@'" or (after == "." and joined[b + 1:b + 2].isalnum())))
 
 
 def _apply_edits(joined, parts, origin, at):
@@ -1839,9 +1866,9 @@ def _apply_edits(joined, parts, origin, at):
                 continue
             if shield is None:
                 shield = _shield(joined)
-            if "\x00" in shield[k:k + len(old)] or not new or _EDIT_MARKUP.search(new) or (_negated(old) and not _negated(new)) or _lost(old, new):
-                continue
-            spans.append((k, k + len(old), new))
+            new = _harper_case(old, new)
+            if _edit_ok(joined, shield, k, old, new):
+                spans.append((k, k + len(old), new))
         pos += len(content) + 1
     out, last = [], 0
     for a, b, new in sorted(spans):

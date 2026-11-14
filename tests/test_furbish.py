@@ -1518,10 +1518,10 @@ class TestHarper(ExternalCase):
     def test_check_reads_harpers_json(self):
         got = furbish.run_external([self.harper()], self.draft(HARPER_DRAFT))
         self.assertEqual([(p.line, p.rule, p.message) for p in got], [
-            (1, "harper", 'harper: Did you mean to repeat this word? It suggests "the". (RepeatedWords)'),
-            (3, "harper", 'harper: Incorrect indefinite article. It suggests "an". (AnA)'),
-            (3, "harper", 'harper: Did you mean to spell `recieve` this way? It suggests "receive". (SpellCheck)'),
-            (5, "harper", "harper: No suggestion here. (Odd)"),
+            (1, "harper", 'harper: "the the": Did you mean to repeat this word? It suggests "the". (RepeatedWords)'),
+            (3, "harper", 'harper: "a": Incorrect indefinite article. It suggests "an". (AnA)'),
+            (3, "harper", 'harper: "recieve": Did you mean to spell `recieve` this way? It suggests "receive" or "relieve". (SpellCheck)'),
+            (5, "harper", 'harper: "Done": No suggestion here. (Odd)'),
         ])
         self.assertEqual(furbish.run_external([self.harper([{"file": "d", "lint_count": 0, "lints": []}], rc=0)], self.draft()), [])
 
@@ -1551,8 +1551,35 @@ class TestHarper(ExternalCase):
             ("This is not here.\n", (0, 8, "not here", "here")),
             ("This took 12 s.\n", (0, 10, "12 s", "s")),
             ("This is the the plan.\n", (0, 8, "the the", "")),
+            ("This is the **the** plan.\n", (0, 8, "the **the", "the")),
+            ("This is _the_ the plan.\n", (0, 9, "the_ the", "the")),
+            ("Ping @teh and src/teh.py and x_teh and #teh and foo.teh now.\n", (0, 6, "teh", "the")),
+            ("Edit src/teh.py now.\n", (0, 9, "teh", "the")),
+            ("Edit x_teh now.\n", (0, 7, "teh", "the")),
+            ("We wont go.\n", (0, 3, "wont", "want")),
         ):
             self.assertEqual(furbish.fix_text(d, prof(), edits=[edit]).text, d, (d, edit))
+
+    def test_a_shouted_suggestion_keeps_the_case_of_the_word(self):
+        self.assertEqual(furbish.fix_text("A error occurred.\n", prof(), edits=[(0, 0, "A", "AN")]).text, "An error occurred.\n")
+        self.assertEqual(furbish.fix_text("THE THE END.\n", prof(), edits=[(0, 0, "THE THE", "THE")]).text, "THE END.\n")
+        out = [{"lints": [{"rule": "AnA", "line": 1, "column": 1, "message": "Incorrect indefinite article.", "matched_text": "A", "suggestions": ["Replace with: \u201cAN\u201d"]}]}]
+        self.assertEqual([p.message for p in furbish.run_external([self.harper(out)], self.draft("A error.\n"))], ['harper: "A": Incorrect indefinite article. It suggests "An". (AnA)'])
+
+    def test_fix_wants_exactly_one_suggestion_of_any_kind(self):
+        out = [{"lints": [{"rule": "R", "line": 1, "column": 9, "matched_text": "the the", "suggestions": ["Replace with: \u201cthe\u201d", "Remove error"]}]}]
+        self.assertEqual(furbish.harper_edits([self.harper(out, fix=["R"])], self.draft("This is the the plan.\n")), [])
+
+    def test_fix_changes_nothing_when_harper_fails(self):
+        code = "import sys\nsys.exit(2)\n"
+        script = self.script(code, "harper.py")
+        cfg = self.write(f'[repo."a/b"]\n[[repo."a/b".external]]\nname = "harper"\nmode = "harper"\ncommand = {json.dumps([sys.executable, "-I", script])}\nfix = ["AnA"]\n', "cfg.toml")
+        draft = self.draft("Fixed in `abc1234`.\n")
+        r = subprocess.run([sys.executable, "-I", SCRIPT, "fix", "--repo", "a/b", "--write", draft], capture_output=True, text=True, env={"FURBISH_CONFIG": cfg, "HOME": self.tmp})
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("harper: stopped with status 2", r.stderr)
+        with open(draft) as f:
+            self.assertEqual(f.read(), "Fixed in `abc1234`.\n")
 
     def test_an_edit_keeps_line_endings_and_finds_its_line_after_added_blank_lines(self):
         d = "<details>\n<summary>Log</summary>\nThis is the the plan.\n</details>\n"
