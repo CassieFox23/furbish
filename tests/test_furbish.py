@@ -681,9 +681,9 @@ class TestCheckDetails(unittest.TestCase):
             d = f"<details>\n<summary>Log</summary>\n\n{body}\n</details>\n"
             self.assertEqual(probs(d), [], body)
             self.assertEqual(fx(d), d, body)
-        d = "- <details>\n  <summary>Log</summary>\n\n  **bold** text\n  </details>\n"
-        self.assertEqual(probs(d), [])
-        self.assertEqual(fx(d), d)
+        for d in ("- <details>\n  <summary>Log</summary>\n\n  **bold** text\n  </details>\n", "<details>\n<summary>Log</summary>\n\n**bold** text\n   </details>\n"):
+            self.assertEqual(probs(d), [], d)
+            self.assertEqual(fx(d), d, d)
 
     def test_only_the_blank_line_after_the_summary_is_asked_for(self):
         d = "<details>\n<summary>Log</summary>\nBody.\n</details>\n"
