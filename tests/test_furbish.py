@@ -3170,8 +3170,17 @@ class TestFableReview(ConfigCase):
         self.assertEqual(advice("LGPLv3+"), "use the SPDX licence id LGPL-3.0-or-later")
         self.assertEqual(advice("AGPLv3"), "use the SPDX licence id AGPL-3.0-only, or AGPL-3.0-or-later if any later version is allowed too")
         self.assertEqual(advice("AGPL 1+"), "use the SPDX licence id AGPL-1.0-or-later")
+        self.assertEqual(advice("GNU Lesser GPL v2.1"), "use the SPDX licence id LGPL-2.1-only, or LGPL-2.1-or-later if any later version is allowed too")
+        self.assertEqual(advice("Lesser GPL 3+"), "use the SPDX licence id LGPL-3.0-or-later")
+        self.assertEqual(advice("Library GPL 2"), "use the SPDX licence id LGPL-2.0-only, or LGPL-2.0-or-later if any later version is allowed too")
+        self.assertEqual(advice("the GNU Affero GPL v3"), "use the SPDX licence id AGPL-3.0-only, or AGPL-3.0-or-later if any later version is allowed too")
+        for d in ("GPL v3 or later", "GPLv3, or any later version", "GPL 3 or later version", "GPLv3+ or later"):
+            self.assertEqual(advice(d), "use the SPDX licence id GPL-3.0-or-later", d)
+        [p] = furbish.check("Released under GPL v3 or later here.\n")
+        self.assertTrue(p.message.startswith("GPL v3 or later is an informal licence name;"), p.message)
+        self.assertEqual(furbish.check("Released under GPL \uff13 here.\n"), [])
         for name, family, version in (("GPL v4", "GPL", "4.0"), ("GPLv2.1", "GPL", "2.1"), ("AGPLv2", "AGPL", "2.0"), ("LGPL 1", "LGPL", "1.0")):
-            self.assertEqual(advice(name), "use the SPDX licence id of the licence you mean", name)
+            self.assertEqual(advice(name), "use the SPDX licence id of the licence you mean (spdx.org/licenses lists them)", name)
             [p] = furbish.check(f"Released under {name} here.\n")
             self.assertIn(f"there is no {family} version {version};", p.message, name)
             self.assertNotIn(f"{family}-{version}", p.message, name)

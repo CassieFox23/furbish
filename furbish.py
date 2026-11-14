@@ -786,7 +786,7 @@ Problem = namedtuple("Problem", "line sid rule message")
 
 _MENTION = re.compile(r"(?<!\w)@[A-Za-z0-9][A-Za-z0-9-]*")
 _SPDX_PATTERNS = (
-    re.compile(r"\b[AL]?GPL ?v?\d(?:\.\d)?\+?(?![\w-]|\.\d)"),
+    re.compile(r"\b(?:(?:Lesser|lesser|Library|Affero|affero) )?[AL]?GPL ?v?[0-9](?:\.[0-9])?\+?(?![\w-]|\.[0-9])"),
     re.compile(r"\bApache(?: License)?,? (?:v|version )?2(?:\.0)?\b"),
     re.compile(r"\bBSD [23](?:-| )[Cc]lause\b"),
 )
@@ -1126,15 +1126,21 @@ def _rule_mentions(outside):
     return out
 
 
-_GPL_NAME = re.compile(r"([AL]?GPL) ?v?(\d)(?:\.(\d))?(\+?)")
+_GPL_NAME = re.compile(r"(?:(\w+) )?([AL]?GPL) ?v?([0-9])(?:\.([0-9]))?(\+?)")
+_GPL_WORD = {"lesser": "LGPL", "library": "LGPL", "affero": "AGPL"}
 _GPL_VERSIONS = {"GPL": ("1.0", "2.0", "3.0"), "LGPL": ("2.0", "2.1", "3.0"), "AGPL": ("1.0", "3.0")}
+_OR_LATER = re.compile(r",? or (?:any )?later\b(?: version\b)?")
 
 
-def _gpl_advice(name):
-    family, major, minor, plus = _GPL_NAME.match(name).groups()
+def _gpl_advice(name, later):
+    word, family, major, minor, plus = _GPL_NAME.match(name).groups()
+    if word and family == "GPL":
+        family = _GPL_WORD[word.lower()]
     version = f"{major}.{minor or 0}"
     if version not in _GPL_VERSIONS[family]:
-        return f"{name} is an informal licence name, and there is no {family} version {version}; use the SPDX licence id of the licence you mean"
+        return f"{name} is an informal licence name, and there is no {family} version {version}; use the SPDX licence id of the licence you mean (spdx.org/licenses lists them)"
+    if later:
+        return f"{name}{later} is an informal licence name; use the SPDX licence id {family}-{version}-or-later"
     if plus:
         return f"{name} is an informal licence name; use the SPDX licence id {family}-{version}-or-later"
     return f"{name} is an informal licence name; use the SPDX licence id {family}-{version}-only, or {family}-{version}-or-later if any later version is allowed too"
@@ -1150,7 +1156,8 @@ def _rule_spdx(outside):
             for m in pat.finditer(masked):
                 name = m.group(0)
                 if "GPL" in name:
-                    out.append(Problem(no, "", "spdx", _gpl_advice(name)))
+                    later = _OR_LATER.match(masked, m.end())
+                    out.append(Problem(no, "", "spdx", _gpl_advice(name, later.group() if later and not name.endswith("+") else "")))
                     continue
                 example = "Apache-2.0" if name.startswith("Apache") else f"BSD-{name[4]}-Clause"
                 out.append(Problem(no, "", "spdx", f"{name} is an informal licence name; use the SPDX licence id, for example {example}"))
