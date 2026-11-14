@@ -552,7 +552,7 @@ def _validate_external(ext, repo):
 def _validate_profile(profile, repo):
     if not isinstance(profile, dict):
         raise ConfigError(f"profile for {repo} must be a table")
-    allowed = {"pr_template", "issue_template", "first_line_prefix", "first_line_skip", "footer", "tldr", "tldr_words", "tldr_max_sentences", "banned", "private", "keep_negation", "code_names", "external"}
+    allowed = {"pr_template", "issue_template", "first_line_prefix", "first_line_skip", "footer", "tldr", "tldr_words", "tldr_max_sentences", "banned", "private", "keep_negation", "grade_skip", "code_names", "external"}
     for k in profile:
         if k not in allowed:
             raise ConfigError(f"unknown key {k} in profile for {repo}")
@@ -601,6 +601,13 @@ def _validate_profile(profile, repo):
     _validate_list_of_strings("private", private, repo)
     keep_negation = profile.get("keep_negation", [])
     _validate_list_of_strings("keep_negation", keep_negation, repo)
+    grade_skip = profile.get("grade_skip", [])
+    _validate_list_of_strings("grade_skip", grade_skip, repo)
+    for pattern in grade_skip:
+        try:
+            re.compile(pattern)
+        except (re.error, OverflowError, RecursionError):
+            raise ConfigError(f"grade_skip in {repo} is not a valid regex: {pattern}")
     code_names = profile.get("code_names", {})
     code_names = _validate_code_names(code_names, repo)
     external = profile.get("external", [])
@@ -617,9 +624,26 @@ def _validate_profile(profile, repo):
         "banned": list(banned),
         "private": list(private),
         "keep_negation": list(keep_negation),
+        "grade_skip": list(grade_skip),
         "code_names": code_names,
         "external": external,
     }
+
+
+_KIND_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+
+
+def _validate_kinds(kinds, base, repo):
+    if not isinstance(kinds, dict):
+        raise ConfigError(f"kinds in {repo} must be a table")
+    out = {}
+    for name, kind in kinds.items():
+        if not _KIND_NAME.fullmatch(name):
+            raise ConfigError(f"kind name {name} in {repo} must be letters, digits, - or _")
+        if not isinstance(kind, dict):
+            raise ConfigError(f"kind {name} in {repo} must be a table")
+        out[name] = _validate_profile({**base, **kind}, f"{repo} kind {name}")
+    return out
 
 
 def _normalise(data):
@@ -637,7 +661,12 @@ def _normalise(data):
     profiles = {}
     for name, profile in table.items():
         _validate_repo_name(name)
+        kinds = {}
+        if isinstance(profile, dict):
+            profile = dict(profile)
+            kinds = profile.pop("kinds", {})
         profiles[name] = _validate_profile(profile, name)
+        profiles[name]["kinds"] = _validate_kinds(kinds, profile, name)
     if default_repo is not None and default_repo not in profiles:
         raise ConfigError(f"default_repo {default_repo} has no profile")
     return {"default_repo": default_repo, "repo": profiles}
@@ -654,19 +683,29 @@ def load_config(path):
         raise ConfigError(f"{path}: {e}") from None
 
 
-def pick_profile(config, repo):
+def pick_profile(config, repo, kind=None):
     if config is None:
+        if kind is not None:
+            raise ConfigError(f"no config file was found, so there is no kind {kind}")
         if repo is not None:
             raise ConfigError(f"no config file was found, so there is no profile for {repo}")
         return None
     if repo is None:
         repo = config.get("default_repo")
         if repo is None:
+            if kind is not None:
+                raise ConfigError("a kind needs a repo profile: pass --repo or set default_repo")
             return None
     if repo not in config["repo"]:
         known = ", ".join(sorted(config["repo"]))
         raise ConfigError(f"the config file has no profile for {repo}; it has: {known}")
-    return config["repo"][repo]
+    profile = config["repo"][repo]
+    if kind is None:
+        return profile
+    if kind not in profile["kinds"]:
+        names = ", ".join(sorted(profile["kinds"])) or "none"
+        raise ConfigError(f"the profile for {repo} has no kind {kind}; it has: {names}")
+    return profile["kinds"][kind]
 
 
 Problem = namedtuple("Problem", "line sid rule message")
@@ -899,15 +938,19 @@ def _cleaned(text):
     return cleaned.replace("*", "").replace("~~", "")
 
 
-def _hard(lines, located, exempt):
+def _grade_skip(p):
+    return [re.compile(x) for x in p.get("grade_skip", [])]
+
+
+def _hard(lines, located, exempt, skip=()):
     skipped = {}
     for x in located:
         s = x.sentence
-        skip = skipped.get(s.line)
-        if skip is None:
+        ignore = skipped.get(s.line)
+        if ignore is None:
             src = lines[s.line - 1].removeprefix("\ufeff").strip()
-            skip = skipped[s.line] = src in exempt or bool(_CHECKBOX_RE.match(src))
-        if skip or x.kind == "heading":
+            ignore = skipped[s.line] = src in exempt or bool(_CHECKBOX_RE.match(src)) or any(r.search(src) for r in skip)
+        if ignore or x.kind == "heading":
             continue
         cleaned = _cleaned(s.text)
         if len(cleaned.split()) < 3:
@@ -917,8 +960,8 @@ def _hard(lines, located, exempt):
             yield s, grade
 
 
-def _rule_grade(lines, located, exempt):
-    return [Problem(s.line, s.id, "grade", f"the reading grade is {round(grade)}, which is too hard; every sentence should be under grade 10") for s, grade in _hard(lines, located, exempt)]
+def _rule_grade(lines, located, exempt, skip):
+    return [Problem(s.line, s.id, "grade", f"the reading grade is {round(grade)}, which is too hard; every sentence should be under grade 10") for s, grade in _hard(lines, located, exempt, skip)]
 
 
 def check(text, profile=None, post=False, exempt=frozenset()):
@@ -942,7 +985,7 @@ def check(text, profile=None, post=False, exempt=frozenset()):
     problems += _rule_spdx(outside)
     problems += _rule_details(lines, outside)
     if post:
-        problems += _rule_grade(lines, located, exempt)
+        problems += _rule_grade(lines, located, exempt, _grade_skip(p))
     problems.sort(key=lambda q: q.line)
     return problems
 
@@ -1500,7 +1543,7 @@ def split_suggestions(text, profile=None, exempt=frozenset()):
     p = profile or {}
     lines = text.replace("\r\n", "\n").split("\n")
     out = []
-    for s, grade in _hard(lines, _sentences(lines, p.get("footer")), exempt):
+    for s, grade in _hard(lines, _sentences(lines, p.get("footer")), exempt, _grade_skip(p)):
         if len(s.text) > _SPLIT_MAX:
             continue
         middle = len(s.text) / 2
@@ -1559,7 +1602,7 @@ def _run_check(args):
     try:
         path = find_config(os.environ)
         config = load_config(path) if path else None
-        profile = pick_profile(config, args.repo)
+        profile = pick_profile(config, args.repo, args.kind)
         exempt = _template_lines(profile)
         text = _read_text(args.draft)
         problems = check(text, profile, args.post, exempt)
@@ -1614,7 +1657,7 @@ def _run_set(args):
     try:
         path = find_config(os.environ)
         config = load_config(path) if path else None
-        profile = pick_profile(config, args.repo)
+        profile = pick_profile(config, args.repo, args.kind)
         text = _read_text(args.draft, True)
         edit = set_sentence(text, args.sid, args.text, profile)
         if edit.text != text and args.write:
@@ -1649,7 +1692,7 @@ def _run_fix(args):
     try:
         path = find_config(os.environ)
         config = load_config(path) if path else None
-        profile = pick_profile(config, args.repo)
+        profile = pick_profile(config, args.repo, args.kind)
         exempt = _template_lines(profile)
         text = _read_text(args.draft, True)
         fixed = fix_text(text, profile, exempt)
@@ -1676,7 +1719,7 @@ def _run_split(args):
     try:
         path = find_config(os.environ)
         config = load_config(path) if path else None
-        profile = pick_profile(config, args.repo)
+        profile = pick_profile(config, args.repo, args.kind)
         exempt = _template_lines(profile)
         found = split_suggestions(_read_text(args.draft), profile, exempt)
     except ConfigError as e:
@@ -1698,6 +1741,7 @@ def main():
     ck = sub.add_parser("check", help="print only the problems in a draft, with line and sentence id", description="Prints only the problems in a draft, one per line as path:line: message, and nothing at all when the draft passes. Exits 0 when it passes, 1 when it finds problems and 2 when it cannot run.")
     ck.add_argument("draft", help="the draft file to check")
     ck.add_argument("--repo", metavar="OWNER/NAME", help="the repo profile from the config file to use; without it, default_repo is used")
+    ck.add_argument("--kind", metavar="NAME", help="a kind inside the repo profile, such as tracker; it overrides only the keys it names")
     ck.add_argument("--post", action="store_true", help="also grade the reading level, as you would just before a post goes up")
     ck.add_argument("--text", action="store_true", help="print each flagged sentence, indented, under its problem")
     st = sub.add_parser("set", help="replace one sentence by its id", description="Replaces one sentence of a draft, found by the id that furbish check prints (S12). The new sentence must keep every number, commit sha and inline-code span of the old one, and under a heading from keep_negation it must keep its negation. Prints the change as a diff, and writes the file only with --write. Exits 0 on success, 1 when the new sentence is refused and 2 when it cannot run.")
@@ -1705,14 +1749,17 @@ def main():
     st.add_argument("sid", metavar="ID", help="the sentence id, for example S12")
     st.add_argument("text", help="the new sentence, as one line; if it starts with a dash, put -- before it, and put any option such as --write before the --")
     st.add_argument("--repo", metavar="OWNER/NAME", help="the repo profile from the config file to use; without it, default_repo is used")
+    st.add_argument("--kind", metavar="NAME", help="a kind inside the repo profile, such as tracker; it overrides only the keys it names")
     st.add_argument("--write", action="store_true", help="change the file; without it nothing is written")
     fi = sub.add_parser("fix", help="make the safe mechanical edits to a draft", description="Makes the safe mechanical edits to the prose of a draft: takes the backticks off a lone commit sha or URL, puts a blank line inside <details> where GitHub needs one, and, if the repo profile has code_names, turns quoted test names, CI check names and CI states into inline code. It never touches code blocks, comments, tables, quotes, link text, headings, checkboxes, template lines or the footer. Prints the changes as a diff, and writes the file only with --write. Exits 0 when it is done (and prints nothing when there is nothing to fix), 1 when it refuses to change a draft and 2 when it cannot run.")
     fi.add_argument("draft", help="the draft file to change")
     fi.add_argument("--repo", metavar="OWNER/NAME", help="the repo profile from the config file to use; without it, default_repo is used")
+    fi.add_argument("--kind", metavar="NAME", help="a kind inside the repo profile, such as tracker; it overrides only the keys it names")
     fi.add_argument("--write", action="store_true", help="change the file; without it nothing is written")
     sp = sub.add_parser("split", help="suggest where a hard sentence could be cut in two", description="Looks at every sentence that reads at grade 10 or harder (the sentences check --post flags) and, where cutting it at a semicolon, a spaced dash or a comma before and, but, so, or or yet gives two sentences that both read easier, prints the sentence id and the two sentences. It only suggests: it never changes the draft, so apply a suggestion with furbish set. It looks only in plain prose, never inside code, links, URLs or quotes, and skips a sentence over 2,000 characters. Prints nothing when it has no suggestion. Exits 0, or 2 when it cannot run.")
     sp.add_argument("draft", help="the draft file to look at")
     sp.add_argument("--repo", metavar="OWNER/NAME", help="the repo profile from the config file to use; without it, default_repo is used")
+    sp.add_argument("--kind", metavar="NAME", help="a kind inside the repo profile, such as tracker; it overrides only the keys it names")
     if not argv:
         ap.print_help(sys.stderr)
         return 2

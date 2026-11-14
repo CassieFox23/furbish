@@ -316,6 +316,7 @@ class TestLoadConfig(ConfigCase):
             "banned": [], "private": [], "keep_negation": [],
             "code_names": {"quoted_tests": False, "checks": [], "states": []},
             "external": [],
+            "grade_skip": [], "kinds": {},
         })
 
     def test_template_paths_expand_a_home_folder(self):
@@ -386,6 +387,13 @@ class TestLoadConfig(ConfigCase):
         self.bad(head + 'name = "x"\nmode = "json"\ncommand = ["c"]\nextra = 1\n', "extra")
         self.bad(head + 'name = "dup-name"\nmode = "json"\ncommand = ["c"]\n[[repo."a/b".external]]\nname = "dup-name"\nmode = "json"\ncommand = ["d"]\n', "dup-name")
 
+    def test_grade_skip_must_be_a_list_of_working_regexes(self):
+        self.assertEqual(self.load('[repo."a/b"]\ngrade_skip = ["^Legacy note:"]\n')["repo"]["a/b"]["grade_skip"], ["^Legacy note:"])
+        self.bad('[repo."a/b"]\ngrade_skip = "^Legacy"\n', "grade_skip", "a/b")
+        self.bad('[repo."a/b"]\ngrade_skip = [""]\n', "grade_skip")
+        self.bad('[repo."a/b"]\ngrade_skip = ["(unclosed"]\n', "grade_skip", "(unclosed")
+        self.bad('[repo."a/b"]\ngrade_skip = ["a{99999999999999999999}"]\n', "grade_skip")
+
     def test_loading_twice_gives_equal_results(self):
         path = self.write(EXAMPLE)
         self.assertEqual(furbish.load_config(path), furbish.load_config(path))
@@ -416,6 +424,60 @@ class TestPickProfile(ConfigCase):
         with self.assertRaises(furbish.ConfigError) as cm:
             furbish.pick_profile(None, "x/y")
         self.assertIn("x/y", str(cm.exception))
+
+
+class TestKinds(ConfigCase):
+    BASE = '[repo."a/b"]\ntldr = "required"\ntldr_words = 100\ntldr_max_sentences = 3\nprivate = ["secret-host"]\n'
+
+    def test_a_kind_switches_the_tldr_rule_off_and_the_repo_keeps_it(self):
+        c = self.load(self.BASE + '[repo."a/b".kinds.release]\ntldr = "off"\n')
+        long_post = words(120) + "\n"
+        self.assertEqual(probs(long_post, furbish.pick_profile(c, "a/b")), [(1, "tldr")])
+        self.assertEqual(probs(long_post, furbish.pick_profile(c, "a/b", "release")), [])
+        kind = furbish.pick_profile(c, "a/b", "release")
+        self.assertEqual((kind["tldr"], kind["tldr_words"], kind["tldr_max_sentences"]), ("off", 100, 3))
+
+    def test_a_kind_inherits_private_from_the_repo(self):
+        c = self.load(self.BASE + '[repo."a/b".kinds.release]\ntldr = "off"\n')
+        kind = furbish.pick_profile(c, "a/b", "release")
+        self.assertEqual(kind["private"], ["secret-host"])
+        self.assertEqual(probs("Host secret-host here.\n", kind), [(1, "private")])
+
+    def test_an_unknown_key_in_a_kind_names_the_kind(self):
+        self.bad(self.BASE + '[repo."a/b".kinds.release]\nbaned = ["x"]\n', "baned", "a/b", "release")
+
+    def test_a_kind_cannot_hold_kinds(self):
+        self.bad(self.BASE + '[repo."a/b".kinds.release]\nkinds = {}\n', "kinds", "release")
+
+    def test_a_bad_kind_name_is_refused(self):
+        for raw in ("bad name", "-x", "a.b", "ü", "release\\n"):
+            self.bad(f'[repo."a/b".kinds."{raw}"]\n', "must be letters, digits, - or _", "a/b")
+
+    def test_kinds_and_each_kind_must_be_tables(self):
+        self.bad('[repo."a/b"]\nkinds = "release"\n', "kinds", "a/b")
+        self.bad('[repo."a/b"]\nkinds = { release = "off" }\n', "release", "must be a table")
+
+    def test_a_missing_kind_lists_the_known_ones(self):
+        c = self.load(self.BASE + '[repo."a/b".kinds.release]\ntldr = "off"\n[repo."a/b".kinds.tracker]\ntldr = "off"\n')
+        with self.assertRaises(furbish.ConfigError) as cm:
+            furbish.pick_profile(c, "a/b", "nope")
+        self.assertEqual(str(cm.exception), "the profile for a/b has no kind nope; it has: release, tracker")
+        plain = self.load('[repo."a/b"]\n')
+        with self.assertRaises(furbish.ConfigError) as cm:
+            furbish.pick_profile(plain, "a/b", "nope")
+        self.assertEqual(str(cm.exception), "the profile for a/b has no kind nope; it has: none")
+
+    def test_a_kind_needs_a_repo_or_a_default_repo(self):
+        c = self.load('[repo."a/b".kinds.release]\ntldr = "off"\n')
+        with self.assertRaises(furbish.ConfigError) as cm:
+            furbish.pick_profile(c, None, "release")
+        self.assertEqual(str(cm.exception), "a kind needs a repo profile: pass --repo or set default_repo")
+        for repo in (None, "a/b"):
+            with self.assertRaises(furbish.ConfigError) as cm:
+                furbish.pick_profile(None, repo, "release")
+            self.assertEqual(str(cm.exception), "no config file was found, so there is no kind release")
+        d = self.load('default_repo = "a/b"\n[repo."a/b".kinds.release]\ntldr = "off"\n')
+        self.assertEqual(furbish.pick_profile(d, None, "release")["tldr"], "off")
 
 
 HARD = "Unquestionably, the implementation's architectural characteristics necessitate comprehensive reconsideration."
@@ -497,6 +559,35 @@ class TestCheckGrade(unittest.TestCase):
     def test_the_footer_is_not_graded(self):
         d = EASY + "\n\n" + HARD + "\n"
         self.assertEqual(probs(d, prof(footer="^" + HARD.replace(".", r"\.") + "$"), post=True), [])
+
+
+class TestGradeSkip(unittest.TestCase):
+    P = prof(grade_skip=["^Legacy note:"])
+
+    def test_a_hard_sentence_on_a_matching_line_is_not_graded(self):
+        d = "Legacy note: " + HARD + "\n"
+        self.assertEqual(probs(d, post=True), [(1, "grade")])
+        self.assertEqual(probs(d, self.P, post=True), [])
+        self.assertEqual(probs(d, prof(grade_skip=["^Other note:"]), post=True), [(1, "grade")])
+
+    def test_only_the_matching_line_is_skipped(self):
+        self.assertEqual(probs("Legacy note: " + HARD + "\n\n" + HARD + "\n", self.P, post=True), [(3, "grade")])
+
+    def test_a_private_string_on_a_skipped_line_is_still_reported(self):
+        p = prof(grade_skip=["^Legacy note:"], private=["secret-host"])
+        self.assertEqual(probs("Legacy note: " + HARD + " on secret-host.\n", p, post=True), [(1, "private")])
+
+    def test_a_banned_phrase_on_a_skipped_line_is_still_reported(self):
+        p = prof(grade_skip=["^Legacy note:"], banned=["synergy"])
+        self.assertEqual(probs("Legacy note: " + HARD + " Some synergy.\n", p, post=True), [(1, "banned")])
+
+    def test_split_and_check_skip_the_same_lines(self):
+        d = f"{SPLIT_A}, and {SPLIT_B}\n"
+        p = prof(grade_skip=["configuration loader"])
+        self.assertEqual(len(sg(d)), 1)
+        self.assertEqual(sg(d, p), [])
+        self.assertEqual(probs(d, post=True), [(1, "grade")])
+        self.assertEqual(probs(d, p, post=True), [])
 
 
 class TestCheckFirstLinePrefix(unittest.TestCase):
@@ -2654,6 +2745,63 @@ class TestSplitCli(ConfigCase):
         r = self.run_split(path)
         self.assertEqual(r.returncode, 0, r.stderr[-300:])
         self.assertLess(time.perf_counter() - t, 2.0)
+
+
+class TestKindCli(ConfigCase):
+    CFG = '[repo."a/b"]\ntldr = "required"\ntldr_words = 100\ntldr_max_sentences = 3\n[repo."a/b".kinds.release]\ntldr = "off"\ngrade_skip = ["configuration loader"]\n'
+
+    def env(self, **extra):
+        e = {"HOME": self.tmp, "PATH": "/usr/bin:/bin"}
+        e.update(extra)
+        return e
+
+    def run_cli(self, *args, **extra):
+        return subprocess.run([sys.executable, "-I", SCRIPT, *args], capture_output=True, text=True, env=self.env(**extra))
+
+    def test_kind_on_check_switches_off_the_tldr_rule(self):
+        cfg = self.write(self.CFG, "cfg.toml")
+        path = self.write(words(120) + "\n", "draft.md")
+        r = self.run_cli("check", "--repo", "a/b", path, FURBISH_CONFIG=cfg)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("TL;DR", r.stdout)
+        r = self.run_cli("check", "--repo", "a/b", "--kind", "release", path, FURBISH_CONFIG=cfg)
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
+
+    def test_a_kinds_grade_skip_applies_to_check_and_split(self):
+        cfg = self.write(self.CFG, "cfg.toml")
+        path = self.write(f"{SPLIT_A}, and {SPLIT_B}\n", "draft.md")
+        self.assertEqual(self.run_cli("check", "--post", "--repo", "a/b", path, FURBISH_CONFIG=cfg).returncode, 1)
+        r = self.run_cli("check", "--post", "--repo", "a/b", "--kind", "release", path, FURBISH_CONFIG=cfg)
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+        self.assertEqual(len(self.run_cli("split", "--repo", "a/b", path, FURBISH_CONFIG=cfg).stdout.splitlines()), 3)
+        r = self.run_cli("split", "--repo", "a/b", "--kind", "release", path, FURBISH_CONFIG=cfg)
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+
+    def test_every_command_takes_kind_and_refuses_an_unknown_one(self):
+        cfg = self.write(self.CFG, "cfg.toml")
+        path = self.write("Body.\n", "draft.md")
+        for cmd in (["check", path], ["fix", path], ["split", path], ["set", path, "S1", "New words here."]):
+            r = self.run_cli(cmd[0], "--repo", "a/b", "--kind", "nope", *cmd[1:], FURBISH_CONFIG=cfg)
+            self.assertEqual((r.returncode, r.stdout), (2, ""), cmd)
+            self.assertIn("has no kind nope", r.stderr, cmd)
+            self.assertNotIn("Traceback", r.stderr, cmd)
+
+    def test_a_kind_with_no_repo_or_no_config_says_so(self):
+        path = self.write("Body.\n", "draft.md")
+        r = self.run_cli("check", "--kind", "release", path)
+        self.assertEqual((r.returncode, r.stdout), (2, ""))
+        self.assertIn("no config file was found, so there is no kind release", r.stderr)
+        cfg = self.write('[repo."a/b".kinds.release]\ntldr = "off"\n', "cfg.toml")
+        r = self.run_cli("check", "--kind", "release", path, FURBISH_CONFIG=cfg)
+        self.assertEqual((r.returncode, r.stdout), (2, ""))
+        self.assertIn("a kind needs a repo profile: pass --repo or set default_repo", r.stderr)
+
+    def test_help_explains_kind_on_each_command(self):
+        for cmd in ("check", "set", "fix", "split"):
+            r = self.run_cli(cmd, "--help")
+            self.assertEqual(r.returncode, 0, cmd)
+            self.assertIn("--kind", r.stdout, cmd)
+            self.assertIn("a kind inside the repo profile, such as tracker; it overrides only the keys it names", " ".join(r.stdout.split()), cmd)
 
 
 if __name__ == "__main__":
