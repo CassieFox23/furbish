@@ -26,7 +26,7 @@ The two sentence-opener rules, a sentence that starts with "So" and one that sta
 MIT, in write-good/LICENSE.
 Copyright (c) 2014-2019 Brian Ford
 
-The weasel words are weasel-words', the list write-good uses: https://github.com/btford/weasel-words, version 0.1.2, commit 642f5981e3fdfbe82ca2b100474aade3fd9eb943 (0.1.2 plus the licence file added after it). All 27 are taken. As in weasel-words, "many" and "few" are not flagged straight after "too": the rows "too many" and "too few" have the kind none, which flags nothing and keeps the words inside it from being flagged.
+The weasel words are from weasel-words, the package write-good takes them from: https://github.com/btford/weasel-words, commit 642f5981e3fdfbe82ca2b100474aade3fd9eb943, the first with a licence file (added in 6ab75282e5b115f812f1d1bc1997633aa700a4f5). All 27 words at that commit are taken. That is one more than the newest release on npm, 0.1.1, which write-good installs: "usually" came in after it. Like weasel-words, furbish doesn't flag "many" or "few" straight after "too": the rows "too many" and "too few" have the kind none, which flags nothing and keeps the word inside it from being flagged. A longer phrase from another list that starts inside one, such as "few in number", is still flagged. Unlike weasel-words, this also holds for "Too" at the start of a sentence and across a line break.
 MIT, in write-good/LICENSE-weasel-words.
 Copyright (c) 2014 Brian Ford
 

@@ -999,7 +999,17 @@ class TestWordListData(unittest.TestCase):
         for d in ("Too many tests fail.\n", "It has too few tests.\n", "It has too\nmany tests.\n"):
             self.assertEqual(says(d), [], d)
         self.assertEqual(says("It has too many and many more.\n"), ['"many" is vague; say exactly what you mean, or cut it (from the write-good word list)'])
-        self.assertEqual(fx("The build is very fast.\n", prof(words=["write-good"], word_swaps=True)), "The build is very fast.\n")
+        rows = {phrase: (swap, kind) for phrase, swap, kind in furbish._load_list("write-good") if kind in ("weasel", "none")}
+        self.assertEqual(rows, {**{w: ("", "weasel") for w in ("are a number", "clearly", "completely", "exceedingly", "excellent", "extremely", "fairly", "few", "huge", "interestingly", "is a number", "largely", "many", "mostly", "obviously", "quite", "relatively", "remarkably", "several", "significantly", "substantially", "surprisingly", "tiny", "usually", "various", "vast", "very")}, "too many": ("", "none"), "too few": ("", "none")})
+
+    def test_too_many_and_too_few_quiet_only_the_word_inside_them(self):
+        p = prof(words=["ai-tells", "proselint", "write-good"], word_swaps=True)
+        says = lambda d: [m.message for m in furbish.check(d, p) if m.rule == "words"]
+        self.assertEqual(says("The tests are too few in number.\n"), ['"few in number" says the same thing twice; write "few" instead (from the proselint word list)'])
+        self.assertEqual(fx("The tests are too few in number.\n", p), "The tests are too few.\n")
+        self.assertEqual(says("They are too few and far between.\n"), ['"few and far between" is a cliché; say what you mean in plain words (from the proselint word list)'])
+        self.assertEqual(says("Too many analysts say so.\n"), ['"many analysts" is a word or phrase that often marks AI-written text; say it in your own words (from the ai-tells word list)'])
+        self.assertEqual(says("Too many tests fail, and too few pass.\n"), [])
 
     def test_no_swap_holds_a_phrase_that_has_a_swap(self):
         index = furbish._phrase_index(ALL_LISTS, swaps=True)

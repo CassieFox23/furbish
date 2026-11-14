@@ -35,7 +35,7 @@ The config is optional. It's a TOML file, usually `~/.config/furbish/config.toml
 
 - a footer, or a TL;DR line at the top
 - words that must never appear, and private text such as your home folder
-- word lists that flag wordy phrases, clichés and words that sound AI-written
+- word lists that flag wordy phrases, vague words, clichés and words that sound AI-written
 - outside checkers: Vale (a style checker), Harper (a grammar checker) or hunspell (a spell checker), which run as their own programs
 
 [CONFIG.md](CONFIG.md) has the details. Every command takes `--repo owner/name` to pick a repo's rules, and `--kind NAME` for a set of rules inside it, such as one for release notes.

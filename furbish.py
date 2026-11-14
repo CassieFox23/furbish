@@ -1051,7 +1051,8 @@ def _phrase_hits(low, index):
             b = a + len(phrase)
             if low.startswith(phrase, a) and not _joined_after(low, b) and (a == lead or not kind.startswith("opener")):
                 yield a, b, row
-                last = b
+                if kind != "none":
+                    last = b
                 break
 
 
@@ -1076,9 +1077,12 @@ def _rule_words(sentences, index):
     for s in sentences:
         masked = _mask(s.text)
         masked = _edit(masked, [m.span() for m in _TAG.finditer(masked)], _hide)
-        said = set()
+        said, quiet = set(), (0, 0)
         for a, b, (phrase, swap, kind, name) in _phrase_hits(_flat(masked), index):
-            if kind == "none" or phrase in said:
+            if kind == "none":
+                quiet = (a, b)
+                continue
+            if phrase in said or quiet[0] <= a and b <= quiet[1]:
                 continue
             said.add(phrase)
             says, todo = _KIND_SAYS[kind]
