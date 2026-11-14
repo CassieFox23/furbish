@@ -950,6 +950,10 @@ def _cleaned(text):
     return cleaned.replace("*", "").replace("~~", "")
 
 
+def _short(cleaned):
+    return len(cleaned.split()) < 3
+
+
 def _grade_skip(p):
     return [re.compile(x) for x in p.get("grade_skip", [])]
 
@@ -965,7 +969,7 @@ def _hard(lines, located, exempt, skip=()):
         if ignore or x.kind == "heading":
             continue
         cleaned = _cleaned(s.text)
-        if len(cleaned.split()) < 3:
+        if _short(cleaned):
             continue
         grade = ari(cleaned)
         if grade >= 10:
@@ -1546,7 +1550,7 @@ def _breaks(text):
 
 def _half(text):
     cleaned = _cleaned(text)
-    return ari(cleaned) if _count(cleaned)[0] >= 3 else None
+    return None if _short(cleaned) else ari(cleaned)
 
 
 def split_suggestions(text, profile=None, exempt=frozenset()):

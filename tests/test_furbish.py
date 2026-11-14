@@ -552,6 +552,11 @@ class TestCheckGrade(unittest.TestCase):
         self.assertEqual(probs("> " + HARD + "\n", post=True), [(1, "grade")])
         self.assertEqual(probs("Unquestionably incomprehensible.\n", post=True), [])
 
+    def test_check_and_split_count_short_sentences_the_same_way(self):
+        self.assertEqual(probs("Unquestionably incomprehensible \u2026\n", post=True), [(1, "grade")])
+        self.assertIsNotNone(furbish._half("Unquestionably incomprehensible \u2026"))
+        self.assertIsNone(furbish._half("Unquestionably incomprehensible"))
+
     def test_a_list_item_is_graded(self):
         self.assertEqual(probs("- " + HARD + "\n", post=True), [(1, "grade")])
 
@@ -2498,10 +2503,11 @@ class TestSplitReviewFixes(unittest.TestCase):
         self.assertEqual(len(furbish._breaks("A &amp; B; C.")), 1)
         self.assertEqual(self.found(self.A + " &amp; " + self.B + " &amp; " + self.B + "."), [])
 
-    def test_a_half_needs_three_real_words(self):
-        self.assertEqual(self.found("Banana mangoes ...; " + self.R + "."), [])
-        self.assertEqual(self.found("Great news \U0001F389; " + self.R + "."), [])
-        self.assertIsNone(furbish._half("Banana mangoes ..."))
+    def test_a_half_counts_its_words_the_way_check_does(self):
+        self.assertEqual(len(self.found("Banana mangoes ...; " + self.R + ".")), 1)
+        self.assertEqual(self.found("Banana mangoes; " + self.R + "."), [])
+        self.assertIsNotNone(furbish._half("Banana mangoes ..."))
+        self.assertIsNone(furbish._half("Banana mangoes"))
         self.assertIsNotNone(furbish._half("Banana mangoes taste great"))
 
     def test_the_exemptions_know_a_bom_ordered_checkboxes_and_odd_line_breaks_in_templates(self):
