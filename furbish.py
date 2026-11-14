@@ -813,7 +813,7 @@ def _rule_tldr(lines, outside, sentences, p):
     first = lines[i].lstrip()
     if prefix and first.startswith(prefix):
         first = first[len(prefix):].lstrip()
-    if first.startswith("**TL;DR:**"):
+    if first.startswith(("**TL;DR:**", "**TL;DR**:")):
         end = i
         while end < len(lines) and lines[end].strip() and (end == i or not _HEADING.match(lines[end])):
             end += 1

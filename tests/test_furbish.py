@@ -691,6 +691,11 @@ class TestCheckTldr(unittest.TestCase):
     def test_a_tldr_line_satisfies_it(self):
         self.assertEqual(probs("**TL;DR:** Short summary here.\n\n" + words(25) + "\n", self.P), [])
 
+    def test_the_colon_may_sit_outside_the_bold(self):
+        self.assertEqual(probs("**TL;DR**: Short summary here.\n\n" + words(25) + "\n", self.P), [])
+        self.assertEqual(probs("**TL;DR**: One thing. Two things. Three things.\n", self.P), [(1, "tldr")])
+        self.assertEqual(probs("**TL;DR** Short summary here.\n\n" + words(25) + "\n", self.P), [(1, "tldr")])
+
     def test_the_tldr_must_come_first(self):
         self.assertEqual(probs("Intro line first.\n\n**TL;DR:** Short.\n\n" + words(25) + "\n", self.P), [(1, "tldr")])
         self.assertEqual(probs("\n\n**TL;DR:** Short.\n\n" + words(25) + "\n", self.P), [])
