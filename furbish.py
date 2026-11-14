@@ -218,6 +218,9 @@ def _blocks(lines, footer):
             qm = _LIST.match(t)
             if qm:
                 t = t[qm.end():].strip()
+                tm = _TASK.match(t)
+                if tm:
+                    t = t[tm.end():]
             part = (no, t, None if shift is None else shift + end_col - len(t))
             if cur and cur[0] == "quote":
                 cur[1].append(part)
@@ -958,7 +961,7 @@ def _hard(lines, located, exempt, skip=()):
         ignore = skipped.get(s.line)
         if ignore is None:
             src = lines[s.line - 1].removeprefix("\ufeff").strip()
-            ignore = skipped[s.line] = src in exempt or bool(_CHECKBOX_RE.match(src)) or any(r.search(src) for r in skip)
+            ignore = skipped[s.line] = src in exempt or bool(_CHECKBOX_RE.match(src.lstrip("> \t"))) or any(r.search(src) for r in skip)
         if ignore or x.kind == "heading":
             continue
         cleaned = _cleaned(s.text)

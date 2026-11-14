@@ -28,7 +28,6 @@ What is done, what is known to be missing, what is planned and what is not comin
 Things furbish does not do yet, or does in a way a person might not expect. None is a crash or a way to lose text.
 
 - **Outside checkers:** a checker's output is held in memory with no size cap, and a timeout stops the checker but not a program it started
-- **A task item inside a block quote** is still graded
 - **Raw HTML blocks** such as `<div>`: `fix` can put backticks in them, which GitHub shows as plain text. Footnote definitions are read as prose
 - **Word counts:** the "under three words" exemption counts whitespace-separated tokens, so a sentence of two words and an ellipsis is graded, while `split` counts only real words
 - **Speed:** `set` reads the draft twice (once to find the sentence, once to check the result), and `split` grades each hard sentence again for each cut it tries, so on a slow machine the worst hostile drafts take about a second. A realistic 262 KB draft takes a tenth of that

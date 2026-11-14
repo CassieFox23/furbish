@@ -547,6 +547,9 @@ class TestCheckGrade(unittest.TestCase):
     def test_headings_checkboxes_and_short_sentences_are_exempt(self):
         self.assertEqual(probs("## " + HARD + "\n", post=True), [])
         self.assertEqual(probs("- [ ] " + HARD + "\n- [x] " + HARD + "\n", post=True), [])
+        self.assertEqual(probs("> - [ ] " + HARD + "\n", post=True), [])
+        self.assertEqual(probs(">> 1. [x] " + HARD + "\n", post=True), [])
+        self.assertEqual(probs("> " + HARD + "\n", post=True), [(1, "grade")])
         self.assertEqual(probs("Unquestionably incomprehensible.\n", post=True), [])
 
     def test_a_list_item_is_graded(self):
@@ -1761,6 +1764,7 @@ class TestSetReviewFixes(unittest.TestCase):
         self.assertEqual(self.put("Foo here.\n***\nBar here.\n", "S2", "Baz here."), "Foo here.\n***\nBaz here.\n")
         self.assertEqual(self.put("- [ ] Task one.\n- [x] Task two.\n", "S1", "Task uno."), "- [ ] Task uno.\n- [x] Task two.\n")
         self.assertEqual(self.put("> - item one\n> continues here.\n", "S1", "New."), "> - New.\n")
+        self.assertEqual(self.put("> - [ ] Task one.\n", "S1", "Task uno."), "> - [ ] Task uno.\n")
         self.assertEqual(self.put("-\tTabbed item.\n", "S1", "New."), "-\tNew.\n")
         self.assertEqual(self.put("- Alpha one\n-\n- beta two.\n", "S1", "New."), "- New.\n-\n- beta two.\n")
         self.assertEqual(self.put("Foo here\n---\n\nBar here.\n", "S1", "Baz here"), "Baz here\n---\n\nBar here.\n")
@@ -1775,6 +1779,7 @@ class TestSetReviewFixes(unittest.TestCase):
         self.assertEqual(texts("- [ ] Task one.\n- [X] Task two.\n"), ["Task one.", "Task two."])
         self.assertEqual(texts("-\tTabbed item.\n"), ["Tabbed item."])
         self.assertEqual(texts("> - item one\n> continues here.\n"), ["item one continues here."])
+        self.assertEqual(texts("> - [ ] Task one.\n> * [x] Task two.\n"), ["Task one.", "Task two."])
         self.assertEqual(texts("- Alpha one\n-\n- beta two.\n"), ["Alpha one", "beta two."])
         self.assertEqual(texts("See [x] here.\n\n[x]: https://example.com/a\n"), ["See [x] here."])
         self.assertEqual(texts("A note[^1].\n\n[^1]: The note text.\n"), ["A note[^1].", "[^1]: The note text."])
