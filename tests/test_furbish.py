@@ -3136,8 +3136,28 @@ class TestFableReview(ConfigCase):
             self.assertEqual(furbish.check(s + "\n"), [], s)
 
     def test_the_licence_message_gives_an_example_that_fits(self):
-        got = {p.message.split(" ")[0] + " " + p.message.split(" ")[1]: p.message.rsplit("for example ", 1)[1] for p in furbish.check("Under Apache 2.0 and BSD 3-Clause and BSD 2-Clause and GPLv2.\n")}
-        self.assertEqual(sorted(got.values()), ["Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "GPL-2.0-only"])
+        got = {p.message.split(" ")[0] + " " + p.message.split(" ")[1]: p.message.rsplit("for example ", 1)[1] for p in furbish.check("Under Apache 2.0 and BSD 3-Clause and BSD 2-Clause.\n")}
+        self.assertEqual(sorted(got.values()), ["Apache-2.0", "BSD-2-Clause", "BSD-3-Clause"])
+
+    def test_the_gpl_message_fits_the_family_and_version(self):
+        def advice(name):
+            [p] = furbish.check(f"Released under {name} here.\n")
+            return p.message.split("; ", 1)[1]
+        self.assertEqual(advice("GPLv3"), "use the SPDX licence id GPL-3.0-only, or GPL-3.0-or-later if any later version is allowed too")
+        self.assertEqual(advice("GPL 3.0"), "use the SPDX licence id GPL-3.0-only, or GPL-3.0-or-later if any later version is allowed too")
+        self.assertEqual(advice("GPLv2"), "use the SPDX licence id GPL-2.0-only, or GPL-2.0-or-later if any later version is allowed too")
+        self.assertEqual(advice("GPLv2+"), "use the SPDX licence id GPL-2.0-or-later")
+        self.assertEqual(advice("GPL v1"), "use the SPDX licence id GPL-1.0-only, or GPL-1.0-or-later if any later version is allowed too")
+        self.assertEqual(advice("LGPLv2.1"), "use the SPDX licence id LGPL-2.1-only, or LGPL-2.1-or-later if any later version is allowed too")
+        self.assertEqual(advice("LGPL 2"), "use the SPDX licence id LGPL-2.0-only, or LGPL-2.0-or-later if any later version is allowed too")
+        self.assertEqual(advice("LGPLv3+"), "use the SPDX licence id LGPL-3.0-or-later")
+        self.assertEqual(advice("AGPLv3"), "use the SPDX licence id AGPL-3.0-only, or AGPL-3.0-or-later if any later version is allowed too")
+        self.assertEqual(advice("AGPL 1+"), "use the SPDX licence id AGPL-1.0-or-later")
+        for name, family, version in (("GPL v4", "GPL", "4.0"), ("GPLv2.1", "GPL", "2.1"), ("AGPLv2", "AGPL", "2.0"), ("LGPL 1", "LGPL", "1.0")):
+            self.assertEqual(advice(name), "use the SPDX licence id of the licence you mean", name)
+            [p] = furbish.check(f"Released under {name} here.\n")
+            self.assertIn(f"there is no {family} version {version};", p.message, name)
+            self.assertNotIn(f"{family}-{version}", p.message, name)
 
     def test_a_missing_template_names_the_config_key(self):
         cfg = self.write('[repo."a/b"]\npr_template = "/nonexistent/tpl.md"\n', "cfg.toml")

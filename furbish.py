@@ -1125,6 +1125,20 @@ def _rule_mentions(outside):
     return out
 
 
+_GPL_NAME = re.compile(r"([AL]?GPL) ?v?(\d)(?:\.(\d))?(\+?)")
+_GPL_VERSIONS = {"GPL": ("1.0", "2.0", "3.0"), "LGPL": ("2.0", "2.1", "3.0"), "AGPL": ("1.0", "3.0")}
+
+
+def _gpl_advice(name):
+    family, major, minor, plus = _GPL_NAME.match(name).groups()
+    version = f"{major}.{minor or 0}"
+    if version not in _GPL_VERSIONS[family]:
+        return f"{name} is an informal licence name, and there is no {family} version {version}; use the SPDX licence id of the licence you mean"
+    if plus:
+        return f"{name} is an informal licence name; use the SPDX licence id {family}-{version}-or-later"
+    return f"{name} is an informal licence name; use the SPDX licence id {family}-{version}-only, or {family}-{version}-or-later if any later version is allowed too"
+
+
 def _rule_spdx(outside):
     out = []
     for no, line in outside:
@@ -1134,7 +1148,10 @@ def _rule_spdx(outside):
         for pat in _SPDX_PATTERNS:
             for m in pat.finditer(masked):
                 name = m.group(0)
-                example = "Apache-2.0" if name.startswith("Apache") else f"BSD-{name[4]}-Clause" if name.startswith("BSD") else "GPL-2.0-only"
+                if "GPL" in name:
+                    out.append(Problem(no, "", "spdx", _gpl_advice(name)))
+                    continue
+                example = "Apache-2.0" if name.startswith("Apache") else f"BSD-{name[4]}-Clause"
                 out.append(Problem(no, "", "spdx", f"{name} is an informal licence name; use the SPDX licence id, for example {example}"))
     return out
 
