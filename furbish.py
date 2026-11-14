@@ -1167,15 +1167,10 @@ def _details_gaps(lines, footer):
         return []
     out = []
     for no, line in _outside_code(lines, _raw_html_lines(lines, footer)):
-        if "</" not in line:
-            continue
-        low = _mask_code(line).lower()
-        if "</summary>" in low and no < len(lines) and lines[no].strip():
-            out.append((no, "after"))
-        if "</details>" in low and no > 1 and lines[no - 2].strip():
-            out.append((no, "before"))
+        if "</" in line and "</summary>" in _mask_code(line).lower() and no < len(lines) and lines[no].strip():
+            out.append(no)
     if out:
-        at = {no - 1 if side == "before" else no for no, side in out}
+        at = set(out)
         spaced, blank = [], {}
         for i, line in enumerate(lines):
             if i in at:
@@ -1183,12 +1178,12 @@ def _details_gaps(lines, footer):
                 blank[i] = len(spaced)
             spaced.append(line)
         raw = _raw_html_lines(spaced, footer)
-        out = [(no, side) for no, side in out if blank[no - 1 if side == "before" else no] not in raw]
+        out = [no for no in out if blank[no] not in raw]
     return out
 
 
 def _rule_details(lines, footer):
-    return [Problem(no, "", "details-blank", f"a blank line is needed {side} {'</summary>' if side == 'after' else '</details>'} or the text inside will not be formatted") for no, side in _details_gaps(lines, footer)]
+    return [Problem(no, "", "details-blank", "a blank line is needed after </summary> or the text inside will not be formatted") for no in _details_gaps(lines, footer)]
 
 
 def _cleaned(text):
@@ -1803,12 +1798,12 @@ def _same_structure(old, new):
     return ("<summary" in _mask_code(old).lower()) == ("<summary" in _mask_code(new).lower())
 
 
-def _gap_line(line, exempt, summary):
+def _gap_line(line, exempt):
     bare = line.removeprefix("\ufeff")
     flat = bare.strip()
     if flat in exempt or not flat.startswith("<") or len(bare) - len(bare.lstrip(" ")) >= 4 or bare.startswith("\t"):
         return False
-    return bool(_HTML_ONLY.fullmatch(flat)) or (summary and "<summary" in _mask_code(flat).lower())
+    return bool(_HTML_ONLY.fullmatch(flat)) or "<summary" in _mask_code(flat).lower()
 
 
 def _fixable(lines, kind, parts, exempt):
@@ -1837,12 +1832,10 @@ def _shape(lines, footer, raw=True):
 
 
 def _gapped(lines, crs, exempt, footer=None):
-    gaps = _details_gaps(lines, footer)
-    before = {no for no, side in gaps if side == "before" and _gap_line(lines[no - 1], exempt, False)}
-    after = {no for no, side in gaps if side == "after" and _gap_line(lines[no - 1], exempt, True)}
+    after = {no for no in _details_gaps(lines, footer) if _gap_line(lines[no - 1], exempt)}
     spaced, origin, ends = [], [], []
     for i, line in enumerate(lines):
-        if (i + 1) in before or i in after:
+        if i in after:
             spaced.append("")
             origin.append(None)
             ends.append(crs[i - 1])

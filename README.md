@@ -23,7 +23,7 @@ With no config at all, `check` looks for:
 - a draft longer than GitHub allows (65,536 characters)
 - @ mentions, which ping people
 - a commit id (sha) or a web address inside backticks, where GitHub won't turn it into a link
-- a collapsed `<details>` section missing the blank lines GitHub needs
+- a collapsed `<details>` section missing the blank line GitHub needs after its summary
 - a loose GPL, Apache or BSD licence name, like `Apache 2.0` where the standard SPDX id is `Apache-2.0`
 - with `--post`, sentences that read at grade 10 or harder
 
@@ -94,7 +94,7 @@ python3 furbish.py fix draft.md --write
 
 Lines starting with `-` are the old text and `+` the new. Without `--write` it also says that nothing was written.
 
-On its own it does two things. It takes the backticks off a lone commit id (in lower case) or web address, and it adds the blank lines inside `<details>`. Your config can ask for more:
+On its own it does two things. It takes the backticks off a lone commit id (in lower case) or web address, and it adds the blank line GitHub needs after a `<details>` summary. Your config can ask for more:
 
 - test names, CI check names and CI results such as `passed`, put in code formatting
 - a wordy phrase swapped for a shorter one, such as "exact same" to "same"

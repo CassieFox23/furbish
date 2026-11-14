@@ -676,13 +676,19 @@ class TestCheckDetails(unittest.TestCase):
         d = "Intro.\n\n<details>\n<summary>Test setup</summary>\n- Box: Nobara\n\n</details>\n"
         self.assertEqual(probs(d), [(4, "details-blank")])
 
-    def test_no_blank_line_before_the_closing_tag(self):
-        d = "<details>\n<summary>Log</summary>\n\nBody.\n</details>\n"
-        self.assertEqual(probs(d), [(5, "details-blank")])
+    def test_no_blank_line_is_asked_for_before_the_closing_tag(self):
+        for body in ("Body.", "**bold** text", "<pre>\ncode\n</pre>", "- item\n- item two", "| a | b |\n|---|---|\n| c | d |", "```\ncode\n```", "> quoted", "## Heading", "    code", "Title\n---"):
+            d = f"<details>\n<summary>Log</summary>\n\n{body}\n</details>\n"
+            self.assertEqual(probs(d), [], body)
+            self.assertEqual(fx(d), d, body)
+        d = "- <details>\n  <summary>Log</summary>\n\n  **bold** text\n  </details>\n"
+        self.assertEqual(probs(d), [])
+        self.assertEqual(fx(d), d)
 
-    def test_both_problems_are_reported(self):
+    def test_only_the_blank_line_after_the_summary_is_asked_for(self):
         d = "<details>\n<summary>Log</summary>\nBody.\n</details>\n"
-        self.assertEqual(probs(d), [(2, "details-blank"), (4, "details-blank")])
+        self.assertEqual(probs(d), [(2, "details-blank")])
+        self.assertEqual(fx(d), "<details>\n<summary>Log</summary>\n\nBody.\n</details>\n")
 
     def test_a_one_line_code_span_does_not_hide_the_rest_of_the_draft(self):
         self.assertEqual(probs("```npm test```\nSee `abcdef1` for details.\n"), [(2, "sha")])
@@ -706,8 +712,8 @@ class TestCheckDetails(unittest.TestCase):
         for before in ("<pre>\nx\n</pre>\n\n", "<pre>x</pre>\n", "<pre>\nx\n</pre>\nText.\n\n"):
             d = before + fold
             n = before.count("\n")
-            self.assertEqual(probs(d), [(n + 2, "details-blank"), (n + 4, "details-blank")], before)
-            self.assertEqual(fx(d), before + "<details>\n<summary>Log</summary>\n\nBody.\n\n</details>\n", before)
+            self.assertEqual(probs(d), [(n + 2, "details-blank")], before)
+            self.assertEqual(fx(d), before + "<details>\n<summary>Log</summary>\n\nBody.\n</details>\n", before)
 
     def test_a_pre_inside_a_fold_still_needs_the_blank_line_after_the_summary(self):
         d = "<details>\n<summary>Log</summary>\nSome **bold** text.\n<pre>\nx\n</pre>\n\n</details>\n"
@@ -718,12 +724,12 @@ class TestCheckDetails(unittest.TestCase):
         for before, p in (("<pre>\n$ run\n\n    result</pre>\n", None), ("<pre>\nx\n\n    </pre>\n", None), ("<pre>\n<!-- </pre> -->\n\n", None), ("<pre>\n<summary>x</summary></pre>\n", None), ("<pre>\n<summary>\nx\n</summary></pre>\n", None), ("<pre>\n```\n</pre>\n", None), ("<pre>\nx\n--footer </pre>\n\n", prof(footer=r"^--footer"))):
             d = before + fold
             n = before.count("\n")
-            self.assertEqual([x for x in probs(d, p) if x[1] == "details-blank"], [(n + 2, "details-blank"), (n + 4, "details-blank")], before)
-            self.assertEqual(fx(d, p), before + "<details>\n<summary>S</summary>\n\n**bold**\n\n</details>\n", before)
+            self.assertEqual([x for x in probs(d, p) if x[1] == "details-blank"], [(n + 2, "details-blank")], before)
+            self.assertEqual(fx(d, p), before + "<details>\n<summary>S</summary>\n\n**bold**\n</details>\n", before)
 
     def test_a_raw_opener_after_a_comment_or_on_a_summary_line(self):
         d = "<!-- c --><pre>\n<details>\n<summary>S</summary>\n**bold**\n</details>\n"
-        self.assertEqual(probs(d), [(3, "details-blank"), (5, "details-blank")])
+        self.assertEqual(probs(d), [(3, "details-blank")])
         d = "<pre><summary>x</summary>\nbody\n</pre>\n"
         self.assertEqual(probs(d), [])
         self.assertEqual(fx(d), d)
@@ -743,7 +749,7 @@ class TestCheckDetails(unittest.TestCase):
         for before in ("```\n<pre>\n```\n\n", "<!-- <pre> -->\n\n", "<!--\n<pre>\n-->\n\n", "Text.\n\n    <pre>\n\n", "`<pre>` opens a block.\n\n"):
             d = before + fold
             n = before.count("\n")
-            self.assertEqual(probs(d), [(n + 2, "details-blank"), (n + 4, "details-blank")], before)
+            self.assertEqual(probs(d), [(n + 2, "details-blank")], before)
 
 
 class TestCheckSpdx(unittest.TestCase):
@@ -1583,7 +1589,7 @@ class TestHarper(ExternalCase):
 
     def test_an_edit_keeps_line_endings_and_finds_its_line_after_added_blank_lines(self):
         d = "<details>\n<summary>Log</summary>\nThis is the the plan.\n</details>\n"
-        self.assertEqual(furbish.fix_text(d, prof(), edits=[(2, 8, "the the", "the")]).text, "<details>\n<summary>Log</summary>\n\nThis is the plan.\n\n</details>\n")
+        self.assertEqual(furbish.fix_text(d, prof(), edits=[(2, 8, "the the", "the")]).text, "<details>\n<summary>Log</summary>\n\nThis is the plan.\n</details>\n")
         self.assertEqual(furbish.fix_text("One line.\r\nThis is the the plan.\r\n", prof(), edits=[(1, 8, "the the", "the")]).text, "One line.\r\nThis is the plan.\r\n")
 
     def test_the_fix_key_is_for_harper_only(self):
@@ -2447,7 +2453,7 @@ class TestFixText(unittest.TestCase):
 
     def test_text_right_under_a_summary_is_fixed_once_the_blank_line_is_in(self):
         d = "<details>\n<summary>Logs</summary>\nFixed in `abc1234`.\n</details>\n"
-        self.assertEqual(fx(d), "<details>\n<summary>Logs</summary>\n\nFixed in abc1234.\n\n</details>\n")
+        self.assertEqual(fx(d), "<details>\n<summary>Logs</summary>\n\nFixed in abc1234.\n</details>\n")
 
     def test_a_footnote_is_fixed_after_its_label(self):
         self.assertEqual(fx("Text here.[^1]\n\n[^1]: Fixed in `abc1234` today.\n"), "Text here.[^1]\n\n[^1]: Fixed in abc1234 today.\n")
@@ -2480,9 +2486,9 @@ class TestFixText(unittest.TestCase):
         self.assertEqual(fx("Fixed in `abc1234` again.\n", None, frozenset({"Fixed in `abc1234` again."})), "Fixed in `abc1234` again.\n")
 
     def test_blank_lines_go_into_details(self):
-        self.assertEqual(fx("<details>\n<summary>Test setup</summary>\nText here.\n</details>\n"), "<details>\n<summary>Test setup</summary>\n\nText here.\n\n</details>\n")
+        self.assertEqual(fx("<details>\n<summary>Test setup</summary>\nText here.\n</details>\n"), "<details>\n<summary>Test setup</summary>\n\nText here.\n</details>\n")
         self.assertEqual(fx("<details>\n<summary>x</summary>\n</details>\n"), "<details>\n<summary>x</summary>\n\n</details>\n")
-        self.assertEqual(fx("<details><summary>x</summary>\nText.\n</details>\n"), "<details><summary>x</summary>\n\nText.\n\n</details>\n")
+        self.assertEqual(fx("<details><summary>x</summary>\nText.\n</details>\n"), "<details><summary>x</summary>\n\nText.\n</details>\n")
 
     def test_details_that_are_already_fine_or_not_real_are_left_alone(self):
         fine = "<details>\n<summary>x</summary>\n\nText.\n\n</details>\n"
@@ -2491,8 +2497,8 @@ class TestFixText(unittest.TestCase):
             self.assertEqual(fx(t), t, t)
 
     def test_the_blank_line_takes_the_line_ending_of_its_neighbour(self):
-        self.assertEqual(fx("<summary>x</summary>\r\nText.\r\n</details>\r\n"), "<summary>x</summary>\r\n\r\nText.\r\n\r\n</details>\r\n")
-        self.assertEqual(fx("<summary>x</summary>\nText.\r\n</details>"), "<summary>x</summary>\n\nText.\r\n\r\n</details>")
+        self.assertEqual(fx("<summary>x</summary>\r\nText.\r\n</details>\r\n"), "<summary>x</summary>\r\n\r\nText.\r\n</details>\r\n")
+        self.assertEqual(fx("<summary>x</summary>\nText.\r\n</details>"), "<summary>x</summary>\n\nText.\r\n</details>")
 
     def test_line_endings_survive_an_edit(self):
         self.assertEqual(fx("One `abc1234`.\r\nTwo `def5678`.\nThree.\r\n"), "One abc1234.\r\nTwo def5678.\nThree.\r\n")
@@ -2685,7 +2691,7 @@ class TestFixCli(ConfigCase):
         r = self.run_fix(path)
         self.assertEqual(r.returncode, 0)
         self.assertEqual(self.read(path), before)
-        self.assertEqual(r.stdout.splitlines(), [f"--- {path}", f"+++ {path}", "@@ -2,3 +2,5 @@", " <summary>Setup</summary>", "-Fixed in `abc1234`.", "+", "+Fixed in abc1234.", "+", " </details>"])
+        self.assertEqual(r.stdout.splitlines(), [f"--- {path}", f"+++ {path}", "@@ -2,3 +2,4 @@", " <summary>Setup</summary>", "-Fixed in `abc1234`.", "+", "+Fixed in abc1234.", " </details>"])
         self.assertIn("--write", r.stderr)
 
     def test_with_write_it_changes_the_file_and_prints_the_same_diff(self):
@@ -2695,7 +2701,7 @@ class TestFixCli(ConfigCase):
         self.assertEqual(r.returncode, 0)
         self.assertEqual(r.stdout, dry.stdout)
         self.assertEqual(r.stderr, "")
-        self.assertEqual(self.read(path), b"<details>\n<summary>Setup</summary>\n\nFixed in abc1234.\n\n</details>\n")
+        self.assertEqual(self.read(path), b"<details>\n<summary>Setup</summary>\n\nFixed in abc1234.\n</details>\n")
 
     def test_a_clean_draft_prints_nothing_and_exits_0(self):
         path = self.draft("Nothing to fix here.\n")
