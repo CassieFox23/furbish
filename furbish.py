@@ -966,6 +966,7 @@ _KIND_SAYS = {
     "ai": ("is a word or phrase that often marks AI-written text", "say it in your own words"),
     "opener-so": ("at the start of a sentence can often go", "start with the point"),
     "opener-there": ("at the start of a sentence hides who does what", "start with that instead"),
+    "weasel": ("is vague", "say exactly what you mean, or cut it"),
 }
 _LISTS = {}
 
@@ -994,7 +995,7 @@ def _load_list(name):
             if not line:
                 continue
             row = tuple(line.split("\t"))
-            if len(row) != 3 or not _WORD.match(row[0]) or row[2] not in _KIND_SAYS:
+            if len(row) != 3 or not _WORD.match(row[0]) or (row[2] not in _KIND_SAYS and row[2] != "none") or (row[2] == "none" and row[1]):
                 raise ConfigError(f"the word list {name} is damaged on line {no}: {path}")
             rows.append(row)
         _LISTS[name] = rows
@@ -1077,7 +1078,7 @@ def _rule_words(sentences, index):
         masked = _edit(masked, [m.span() for m in _TAG.finditer(masked)], _hide)
         said = set()
         for a, b, (phrase, swap, kind, name) in _phrase_hits(_flat(masked), index):
-            if phrase in said:
+            if kind == "none" or phrase in said:
                 continue
             said.add(phrase)
             says, todo = _KIND_SAYS[kind]

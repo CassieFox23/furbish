@@ -32,6 +32,7 @@ ameliorate		wordy
 anticipate		wordy
 apparent		wordy
 appreciable		wordy
+are a number		weasel
 as a matter of fact		wordy
 as a means of		wordy
 as far as i'm concerned		wordy
@@ -54,8 +55,10 @@ by means of		wordy
 by virtue of		wordy
 by virtue of the fact that		wordy
 cease		wordy
+clearly		weasel
 close proximity		wordy
 commence		wordy
+completely		weasel
 comply with		wordy
 concerning		wordy
 consequently		wordy
@@ -80,13 +83,18 @@ equitable		wordy
 equivalent		wordy
 evaluate		wordy
 evidenced		wordy
+exceedingly		weasel
+excellent		weasel
 exclusively		wordy
 expedite		wordy
 expend		wordy
 expiration		wordy
+extremely		weasel
 facilitate		wordy
 factual evidence		wordy
+fairly		weasel
 feasible		wordy
+few		weasel
 finalize		wordy
 first and foremost		wordy
 for all intents and purposes		wordy
@@ -98,6 +106,7 @@ formulate		wordy
 have a tendency to		wordy
 honest truth		wordy
 however		wordy
+huge		weasel
 if and when		wordy
 impacted		wordy
 implement		wordy
@@ -134,7 +143,9 @@ incumbent upon		wordy
 indicate		wordy
 indication		wordy
 initiate		wordy
+interestingly		weasel
 irregardless		wordy
+is a number		weasel
 is applicable to		wordy
 is authorized to		wordy
 is responsible for		wordy
@@ -142,15 +153,18 @@ it is		wordy
 it is essential		wordy
 it seems that		wordy
 it was		wordy
+largely		weasel
 magnitude		wordy
 majority of		wordy
 make an effort		wordy
+many		weasel
 maximum		wordy
 methodology		wordy
 minimize		wordy
 minimum		wordy
 modify		wordy
 monitor		wordy
+mostly		weasel
 multiple		wordy
 myriad of		wordy
 necessitate		wordy
@@ -166,6 +180,7 @@ numerous		wordy
 objective		wordy
 obligate		wordy
 obtain		wordy
+obviously		weasel
 of late		wordy
 of the fact that		wordy
 off of		wordy
@@ -193,19 +208,24 @@ proficiency		wordy
 provided that		wordy
 purchase		wordy
 put simply		wordy
+quite		weasel
 readily apparent		wordy
 refer back		wordy
 regarding		wordy
+relatively		weasel
 relocate		wordy
 remainder		wordy
+remarkably		weasel
 remuneration		wordy
 requirement		wordy
 reside		wordy
 residence		wordy
 retain		wordy
 satisfy		wordy
+several		weasel
 shall		wordy
 should you wish		wordy
+significantly		weasel
 similar to		wordy
 so		opener-so
 solicit		wordy
@@ -214,8 +234,10 @@ span across		wordy
 strategize		wordy
 subsequent		wordy
 substantial		wordy
+substantially		weasel
 successfully complete		wordy
 sufficient		wordy
+surprisingly		weasel
 terminate		wordy
 that which		wordy
 the month of		wordy
@@ -224,15 +246,22 @@ there are		opener-there
 there is		opener-there
 therefore		wordy
 time period		wordy
+tiny		weasel
+too few		none
+too many		none
 took advantage of		wordy
 transmit		wordy
 transpire		wordy
 type of		wordy
 until such time as		wordy
+usually		weasel
 utilization		wordy
 utilize		wordy
 validate		wordy
+various		weasel
 various different		wordy
+vast		weasel
+very		weasel
 what i mean to say is		wordy
 whether or not		wordy
 with respect to		wordy

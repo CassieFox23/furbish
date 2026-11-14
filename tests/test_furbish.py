@@ -978,10 +978,21 @@ class TestWordListData(unittest.TestCase):
             for row in rows[1:]:
                 phrase, swap, kind = row.split("\t")
                 self.assertRegex(phrase, r"^[a-z][a-z0-9]*(?:[ '-][a-z0-9]+)*$", (name, row))
-                self.assertIn(kind, furbish._KIND_SAYS, (name, row))
+                self.assertIn(kind, (*furbish._KIND_SAYS, "none"), (name, row))
+                if kind == "none":
+                    self.assertEqual(swap, "", (name, row))
                 self.assertNotIn(phrase, phrases, (name, row))
                 self.assertEqual(swap, swap.strip(), (name, row))
                 phrases.add(phrase)
+
+    def test_write_good_flags_its_weasel_words_but_not_too_many_or_too_few(self):
+        says = lambda d: [p.message for p in furbish.check(d, prof(words=["write-good"])) if p.rule == "words"]
+        self.assertEqual(says("The build is very fast.\n"), ['"very" is vague; say exactly what you mean, or cut it (from the write-good word list)'])
+        self.assertEqual(says("Many tests fail, and there is a number of them.\n"), ['"Many" is vague; say exactly what you mean, or cut it (from the write-good word list)', '"is a number" is vague; say exactly what you mean, or cut it (from the write-good word list)'])
+        for d in ("Too many tests fail.\n", "It has too few tests.\n", "It has too\nmany tests.\n"):
+            self.assertEqual(says(d), [], d)
+        self.assertEqual(says("It has too many and many more.\n"), ['"many" is vague; say exactly what you mean, or cut it (from the write-good word list)'])
+        self.assertEqual(fx("The build is very fast.\n", prof(words=["write-good"], word_swaps=True)), "The build is very fast.\n")
 
     def test_no_swap_holds_a_phrase_that_has_a_swap(self):
         index = furbish._phrase_index(ALL_LISTS, swaps=True)
@@ -1021,7 +1032,7 @@ class TestWordsConfig(ConfigCase):
 
     def test_a_damaged_list_is_an_error_not_a_crash(self):
         data = os.path.join(self.tmp, "data")
-        for name, body in (("two", b"phrase\tswap\tkind\ndelve\tai\n"), ("four", b"phrase\tswap\tkind\ndelve\t\tai\tx\n"), ("kind", b"phrase\tswap\tkind\ndelve\t\tnokind\n"), ("bytes", b"phrase\tswap\tkind\nd\xe9lve\t\tai\n")):
+        for name, body in (("two", b"phrase\tswap\tkind\ndelve\tai\n"), ("four", b"phrase\tswap\tkind\ndelve\t\tai\tx\n"), ("kind", b"phrase\tswap\tkind\ndelve\t\tnokind\n"), ("bytes", b"phrase\tswap\tkind\nd\xe9lve\t\tai\n"), ("noneswap", b"phrase\tswap\tkind\ntoo many\tlots\tnone\n")):
             os.makedirs(os.path.join(data, name))
             with open(os.path.join(data, name, "words.tsv"), "wb") as f:
                 f.write(body)
@@ -1029,7 +1040,7 @@ class TestWordsConfig(ConfigCase):
         furbish._DATA = data
         furbish._LISTS.clear()
         try:
-            for name in ("two", "four", "kind", "bytes"):
+            for name in ("two", "four", "kind", "bytes", "noneswap"):
                 with self.assertRaises(furbish.ConfigError, msg=name) as cm:
                     furbish.check("Delve.\n", prof(words=[name]))
                 self.assertIn(f"the word list {name} is", str(cm.exception))
