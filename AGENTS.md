@@ -10,7 +10,7 @@ The whole program is one file, `furbish.py`. It uses the Python standard library
 |---|---|
 | `furbish.py` | the command line (`check`, `set`, `fix`, `split`, `--help` and `--version`), the prose reader (`read_prose`, `ari`, and `_sentences`, which also says where each sentence sits in the file), the config loader (`find_config`, `load_config`, `pick_profile`), the outside-checker runner (`run_external`) and the `set` guards (`set_sentence`) the `fix` edits (`fix_text`) and the `split` suggestions (`split_suggestions`) |
 | `tests/` | offline unit tests, on made-up drafts only; the drafts are in `tests/drafts/` |
-| `data/` (planned) | word lists borrowed from proselint (BSD-3-Clause), write-good (MIT) and AI-tell phrase lists (MIT), each kept beside its upstream licence, with a NOTICE file |
+| `data/` | word lists borrowed from proselint (BSD-3-Clause), write-good's too-wordy list (MIT) and vale-ai-tells (MIT), each in its own folder as `words.tsv` beside its upstream licence; `data/NOTICE` says where each came from |
 
 ## Rules
 

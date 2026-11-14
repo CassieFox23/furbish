@@ -1,0 +1,34 @@
+furbish borrows the word lists in this folder from other projects. Each list sits in its own folder beside the licence it came under. furbish itself is GPL-3.0-only; these lists keep their own licences.
+
+Each words.tsv has three columns: the phrase in lower case, a one-for-one replacement where there is one, and the kind of problem. Only plain phrases were taken. Rules written as regular expressions were left out, and so were a few replacements that change the meaning of a technical sentence.
+
+
+proselint/words.tsv
+
+From proselint, https://github.com/amperser/proselint, commit dbed789caae662d06c7c8a5a13dd31f1acd36f5c.
+BSD-3-Clause, in proselint/LICENSE.md.
+Copyright © 2014–2015, Jordan Suchow, Michael Pacer, and Lara A. Ross
+
+Taken from proselint/checks/: redundancy/garner, redundancy/after-the-deadline, redundancy/misc.py and redundancy/ras_syndrome.py (redundant), misc/composition.py (wordy), hedging.py (hedges), cliches/garner, cliches/diction, cliches/hell.py and cliches/write-good (clichés; proselint credits the last of these to write-good, https://github.com/btford/write-good), and industrial_language/jargon.py, corporate_speak.py and commercialese.py (jargon).
+
+
+write-good/words.tsv
+
+The wordy phrases are too-wordy's, the list write-good uses: https://github.com/duereg/too-wordy, version 0.3.1, commit 7ca93e55916c67005c1ecfc029dc37402306671a.
+MIT, in write-good/LICENSE-too-wordy.
+Copyright (c) 2014 Matt Blair
+
+The two sentence-opener rules, a sentence that starts with "So" and one that starts with "There is" or "There are", follow write-good: https://github.com/btford/write-good, commit 6940b034c6f5a7e101c01a24d651a778fc3fe435.
+MIT, in write-good/LICENSE.
+Copyright (c) 2014-2019 Brian Ford
+
+write-good's weasel-word list comes from a separate package whose licence file was not read, so it is not included.
+
+
+ai-tells/words.tsv
+
+From vale-ai-tells, https://github.com/tbhb/vale-ai-tells, commit 51f646e366ba7c9dcb078ebeae345b7ff353eb3b.
+MIT, in ai-tells/LICENSE.
+Copyright (c) 2025-2026 Tony Burns
+
+Taken from the plain tokens of the existence rules in styles/ai-tells/. Left out: rules of other kinds, such as sequence rules; tokens written as regular expressions, which includes every rule marked nonword; rules scoped to headings or raw text; and eight rules whose phrases are ordinary wording in bug reports and docs (AnthropomorphicJustification, FigurativeQuantities, NarrativePivots, RedundantPrecaution, RestatementMarkers, SelfReference, SequencingMarkers and ServesAsDodge).

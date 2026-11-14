@@ -316,7 +316,7 @@ class TestLoadConfig(ConfigCase):
             "banned": [], "private": [], "keep_negation": [],
             "code_names": {"quoted_tests": False, "checks": [], "states": []},
             "external": [],
-            "grade_skip": [], "kinds": {},
+            "grade_skip": [], "words": [], "word_swaps": False, "kinds": {},
         })
 
     def test_template_paths_expand_a_home_folder(self):
@@ -488,7 +488,7 @@ def prof(**kw):
     p = {
         "pr_template": None, "issue_template": None, "first_line_prefix": None, "first_line_skip": None, "footer": None,
         "tldr": "off", "tldr_words": None, "tldr_max_sentences": None,
-        "banned": [], "private": [], "keep_negation": [],
+        "banned": [], "private": [], "keep_negation": [], "words": [], "word_swaps": False,
         "code_names": {"quoted_tests": False, "checks": [], "states": []},
         "external": [],
     }
@@ -843,6 +843,150 @@ class TestCheckFooter(unittest.TestCase):
 
     def test_no_footer_setting_means_no_check(self):
         self.assertEqual(probs("Body here.\n", prof()), [])
+
+
+MADE_UP_LIST = "phrase\tswap\tkind\nin order to\tto\twordy\nunsolved mystery\tmystery\tredundant\nfinal outcome\toutcome\tredundant\ndid not succeed\tfailed\twordy\nat this point in time\tnow\twordy\npoint in\t\tjargon\ndelve\t\tai\nso\t\topener-so\nthere is\t\topener-there\nit's important to note\t\thedge\nself-confessed\tconfessed\tredundant\n"
+ALL_LISTS = ["ai-tells", "proselint", "write-good"]
+
+
+class WordsCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.tmp, "made-up"))
+        with open(os.path.join(self.tmp, "made-up", "words.tsv"), "w", encoding="utf-8") as f:
+            f.write(MADE_UP_LIST)
+        self.data, self.cache = furbish._DATA, dict(furbish._LISTS)
+        furbish._DATA = self.tmp
+        furbish._LISTS.clear()
+
+    def tearDown(self):
+        furbish._DATA = self.data
+        furbish._LISTS.clear()
+        furbish._LISTS.update(self.cache)
+        shutil.rmtree(self.tmp)
+
+    def flags(self, text, **kw):
+        return [(p.line, p.sid, p.message) for p in furbish.check(text, prof(words=["made-up"], **kw)) if p.rule == "words"]
+
+
+class TestWords(WordsCase):
+    def test_off_unless_a_profile_names_a_list(self):
+        d = "In order to delve, we ran it.\n"
+        self.assertEqual([p for p in furbish.check(d, prof()) if p.rule == "words"], [])
+        self.assertEqual([p for p in furbish.check(d) if p.rule == "words"], [])
+        self.assertEqual(self.flags(d), [(1, "S1", '"In order to" is wordy; write "to" instead (from the made-up word list)'), (1, "S1", '"delve" is a word or phrase that often marks AI-written text (from the made-up word list)')])
+
+    def test_whole_words_only_and_the_longest_phrase_wins(self):
+        self.assertEqual(self.flags("We delved into it and delve-like words stay.\n"), [])
+        self.assertEqual([m for _, _, m in self.flags("At this point in time it works.\n")], ['"At this point in time" is wordy; write "now" instead (from the made-up word list)'])
+        self.assertEqual([m for _, _, m in self.flags("A point in the file.\n")], ['"point in" is jargon (from the made-up word list)'])
+        self.assertEqual([m for _, _, m in self.flags("A self-confessed fan, not a confessed one.\n")], ['"self-confessed" says the same thing twice; write "confessed" instead (from the made-up word list)'])
+
+    def test_code_links_and_urls_are_not_read(self):
+        self.assertEqual(self.flags("Run `in order to` and see https://example.com/delve and [x](https://example.com/in-order-to).\n\n```\ndelve\n```\n"), [])
+
+    def test_a_curly_apostrophe_matches_and_each_phrase_is_said_once_a_sentence(self):
+        self.assertEqual([m for _, _, m in self.flags("It’s important to note this, delve and delve.\n")], ['"It’s important to note" hedges; say it plainly (from the made-up word list)', '"delve" is a word or phrase that often marks AI-written text (from the made-up word list)'])
+
+    def test_openers_count_only_at_the_start_of_a_sentence(self):
+        self.assertEqual([m for _, _, m in self.flags("So we ran it. **So** it works. We ran it, so it works. So-called fixes stay.\n")], ['"So" at the start of a sentence can usually go (from the made-up word list)', '"So" at the start of a sentence can usually go (from the made-up word list)'])
+        self.assertEqual([s for _, s, _ in self.flags("There is a bug. I think there is a bug.\n- There is one more.\n")], ["S1", "S3"])
+
+    def test_the_rule_runs_without_post(self):
+        self.assertEqual(len(self.flags("Delve here.\n")), 1)
+
+
+class TestWordSwaps(WordsCase):
+    def fix(self, text, swaps=True):
+        return furbish.fix_text(text, prof(words=["made-up"], word_swaps=swaps)).text
+
+    def test_fix_swaps_only_when_asked(self):
+        d = "In order to run it, read the final outcome.\n"
+        self.assertEqual(self.fix(d, swaps=False), d)
+        self.assertEqual(fx(d, prof(word_swaps=True)), d)
+        self.assertEqual(self.fix(d), "To run it, read the outcome.\n")
+
+    def test_flags_without_a_swap_are_left_alone(self):
+        d = "So we delve into it. There is a point in the file.\n"
+        self.assertEqual(self.fix(d), d)
+
+    def test_an_article_that_would_no_longer_fit_blocks_the_swap(self):
+        self.assertEqual(self.fix("It is an unsolved mystery and the unsolved mystery.\n"), "It is an unsolved mystery and the mystery.\n")
+
+    def test_a_swap_that_drops_a_negation_is_not_made(self):
+        d = "The step did not succeed.\n"
+        self.assertEqual(self.fix(d), d)
+
+    def test_odd_case_code_links_quotes_and_headings_are_left_alone(self):
+        for d in ("IN ORDER TO run it.\n", "Run `in order to` now.\n", "See [in order to](https://example.com) now.\n", 'He said "in order to" twice.\n', "# In order to run it\n", "- [ ] In order to run it\n", "> In order to run it.\n"):
+            self.assertEqual(self.fix(d), d, d)
+
+    def test_a_second_run_changes_nothing(self):
+        once = self.fix("In order to see the final outcome, in order to run.\n")
+        self.assertEqual(once, "To see the outcome, to run.\n")
+        self.assertEqual(self.fix(once), once)
+
+
+class TestWordListData(unittest.TestCase):
+    def test_the_lists_and_their_licences(self):
+        self.assertEqual(furbish._word_lists(), ALL_LISTS)
+        self.assertTrue(os.path.isfile(os.path.join(furbish._DATA, "NOTICE")))
+        for name in ALL_LISTS:
+            folder = os.path.join(furbish._DATA, name)
+            self.assertTrue(any(n.startswith("LICENSE") for n in os.listdir(folder)), name)
+            with open(os.path.join(folder, "words.tsv"), encoding="utf-8") as f:
+                rows = f.read().splitlines()
+            self.assertEqual(rows[0], "phrase\tswap\tkind", name)
+            phrases = set()
+            for row in rows[1:]:
+                phrase, swap, kind = row.split("\t")
+                self.assertRegex(phrase, r"^[a-z][a-z0-9]*(?:[ '-][a-z0-9]+)*$", (name, row))
+                self.assertIn(kind, furbish._KIND_SAYS, (name, row))
+                self.assertNotIn(phrase, phrases, (name, row))
+                self.assertEqual(swap, swap.strip(), (name, row))
+                phrases.add(phrase)
+
+    def test_no_swap_holds_a_phrase_that_has_a_swap(self):
+        index = furbish._phrase_index(ALL_LISTS, swaps=True)
+        for name in ALL_LISTS:
+            for phrase, swap, kind in furbish._load_list(name):
+                if swap:
+                    self.assertEqual(list(furbish._phrase_hits(furbish._flat(swap), index)), [], (name, phrase, swap))
+
+    def test_every_list_on_a_262_kb_draft_stays_fast(self):
+        p = prof(words=ALL_LISTS, word_swaps=True)
+        furbish._phrase_index(ALL_LISTS)
+        body = open(os.path.join(DRAFTS, "pr-body.md")).read()
+        for d in ((body * (262000 // len(body) + 1))[:262000], "a " * 131000, ("it is " * 44000)[:262000], ("In order to delve into the final outcome of an unsolved mystery. " * 4100)[:262000], "So " * 87000):
+            t = time.perf_counter()
+            furbish.check(d, p, post=True)
+            self.assertLess(time.perf_counter() - t, 1.0, d[:14])
+            t = time.perf_counter()
+            try:
+                furbish.fix_text(d, p)
+            except furbish.Refused:
+                pass
+            self.assertLess(time.perf_counter() - t, 1.0, d[:14])
+
+
+class TestWordsConfig(ConfigCase):
+    def test_a_profile_names_known_lists_only(self):
+        p = self.load('[repo."a/b"]\nwords = ["proselint"]\nword_swaps = true\n')["repo"]["a/b"]
+        self.assertEqual((p["words"], p["word_swaps"]), (["proselint"], True))
+        self.bad('[repo."a/b"]\nwords = ["nope"]\n', "words in a/b names nope, which is not one of furbish's word lists; they are: ai-tells, proselint, write-good")
+        self.bad('[repo."a/b"]\nword_swaps = "yes"\n', "word_swaps")
+
+    def test_a_kind_can_turn_the_lists_off(self):
+        c = self.load('default_repo = "a/b"\n[repo."a/b"]\nwords = ["proselint"]\n[repo."a/b".kinds.tracker]\nwords = []\n')
+        self.assertEqual(furbish.pick_profile(c, None, "tracker")["words"], [])
+        self.assertEqual(furbish.pick_profile(c, None)["words"], ["proselint"])
+
+    def test_the_cli_reads_the_lists_from_the_config(self):
+        cfg = self.write('[repo."a/b"]\nwords = ["write-good"]\n')
+        draft = self.write("In order to run it, we ran it.\n", "draft.md")
+        r = subprocess.run([sys.executable, "-I", SCRIPT, "check", "--repo", "a/b", draft], capture_output=True, text=True, env={"FURBISH_CONFIG": cfg, "HOME": self.tmp})
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('S1: "In order to" is wordy (from the write-good word list)', r.stdout)
 
 
 class TestCheckBanned(unittest.TestCase):

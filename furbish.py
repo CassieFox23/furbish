@@ -611,7 +611,7 @@ def _validate_external(ext, repo):
 def _validate_profile(profile, repo):
     if not isinstance(profile, dict):
         raise ConfigError(f"profile for {repo} must be a table")
-    allowed = {"pr_template", "issue_template", "first_line_prefix", "first_line_skip", "footer", "tldr", "tldr_words", "tldr_max_sentences", "banned", "private", "keep_negation", "grade_skip", "code_names", "external"}
+    allowed = {"pr_template", "issue_template", "first_line_prefix", "first_line_skip", "footer", "tldr", "tldr_words", "tldr_max_sentences", "banned", "private", "keep_negation", "grade_skip", "words", "word_swaps", "code_names", "external"}
     for k in profile:
         if k not in allowed:
             raise ConfigError(f"unknown key {k} in profile for {repo}")
@@ -667,6 +667,14 @@ def _validate_profile(profile, repo):
             re.compile(pattern)
         except (re.error, OverflowError, RecursionError):
             raise ConfigError(f"grade_skip in {repo} is not a valid regex: {pattern}")
+    words = profile.get("words", [])
+    _validate_list_of_strings("words", words, repo)
+    known = _word_lists()
+    for name in words:
+        if name not in known:
+            raise ConfigError(f"words in {repo} names {name}, which is not one of furbish's word lists; they are: {', '.join(known) or 'none found'}")
+    word_swaps = profile.get("word_swaps", False)
+    _validate_bool("word_swaps", word_swaps, repo)
     code_names = profile.get("code_names", {})
     code_names = _validate_code_names(code_names, repo)
     external = profile.get("external", [])
@@ -684,6 +692,8 @@ def _validate_profile(profile, repo):
         "private": list(private),
         "keep_negation": list(keep_negation),
         "grade_skip": list(grade_skip),
+        "words": list(words),
+        "word_swaps": word_swaps,
         "code_names": code_names,
         "external": external,
     }
@@ -941,6 +951,103 @@ def _rule_private(lines, phrases):
     return out
 
 
+_DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+_KIND_SAYS = {
+    "wordy": "is wordy",
+    "redundant": "says the same thing twice",
+    "hedge": "hedges; say it plainly",
+    "cliche": "is a cliché",
+    "jargon": "is jargon",
+    "ai": "is a word or phrase that often marks AI-written text",
+    "opener-so": "at the start of a sentence can usually go",
+    "opener-there": "at the start of a sentence hides who does what; start with that instead",
+}
+_LISTS = {}
+
+
+def _word_lists():
+    try:
+        names = os.listdir(_DATA)
+    except OSError:
+        return []
+    return sorted(n for n in names if os.path.isfile(os.path.join(_DATA, n, "words.tsv")))
+
+
+def _load_list(name):
+    rows = _LISTS.get(name)
+    if rows is None:
+        try:
+            with open(os.path.join(_DATA, name, "words.tsv"), encoding="utf-8") as f:
+                body = f.read()
+        except OSError as e:
+            raise ConfigError(f"cannot read the word list {name}: {e.strerror or e}") from None
+        rows = _LISTS[name] = [tuple(line.split("\t")) for line in body.splitlines()[1:] if line]
+    return rows
+
+
+def _phrase_index(names, swaps=False):
+    index = {}
+    seen = set()
+    for name in names:
+        for phrase, swap, kind in _load_list(name):
+            if phrase in seen or (swaps and not swap):
+                continue
+            seen.add(phrase)
+            index.setdefault(tuple(_WORD.findall(phrase)[:2]), []).append((phrase, swap, kind, name))
+    for group in index.values():
+        group.sort(key=lambda r: len(r[0]), reverse=True)
+    return index
+
+
+def _flat(text):
+    low = text.lower()
+    if len(low) != len(text):
+        return None
+    return low.replace("\u2019", "'").replace("\u02bc", "'")
+
+
+def _inword(c):
+    return c.isalnum() or c in "'-_"
+
+
+_LEAD = re.compile(r"[\s*_~\"'(\[\u201c]*")
+
+
+def _phrase_hits(low, index):
+    last = 0
+    lead = _LEAD.match(low).end()
+    words = list(_WORD.finditer(low))
+    for i, m in enumerate(words):
+        a = m.start()
+        if a < last or (a and _inword(low[a - 1])):
+            continue
+        w = m.group()
+        pair = index.get((w, words[i + 1].group()), ()) if i + 1 < len(words) else ()
+        for row in (*pair, *index.get((w,), ())):
+            phrase, kind = row[0], row[2]
+            b = a + len(phrase)
+            if low.startswith(phrase, a) and (b == len(low) or not _inword(low[b])) and (a == lead or not kind.startswith("opener")):
+                yield a, b, row
+                last = b
+                break
+
+
+def _rule_words(sentences, index):
+    out = []
+    for s in sentences:
+        low = _flat(_mask(s.text))
+        if low is None:
+            continue
+        said = set()
+        for a, b, (phrase, swap, kind, name) in _phrase_hits(low, index):
+            if phrase in said:
+                continue
+            said.add(phrase)
+            then = f'; write "{swap}" instead' if swap else ""
+            out.append(Problem(s.line, s.id, "words", f'"{s.text[a:b]}" {_KIND_SAYS[kind]}{then} (from the {name} word list)'))
+    return out
+
+
 def _rule_code_spans(outside):
     out = []
     for no, line in outside:
@@ -1072,7 +1179,7 @@ def check(text, profile=None, post=False, exempt=frozenset()):
     lines[0] = lines[0].removeprefix("\ufeff")
     footer = p.get("footer")
     outside = list(_outside_code(lines))
-    need = post or p.get("tldr") == "required" or bool(p.get("banned"))
+    need = post or p.get("tldr") == "required" or bool(p.get("banned")) or bool(p.get("words"))
     located = _sentences(lines, footer) if need else []
     sentences = [x.sentence for x in located]
     problems = _rule_length(text)
@@ -1082,6 +1189,8 @@ def check(text, profile=None, post=False, exempt=frozenset()):
     problems += _rule_footer(lines, footer)
     problems += _rule_banned(sentences, p.get("banned") or [])
     problems += _rule_private(lines, p.get("private") or [])
+    if p.get("words"):
+        problems += _rule_words(sentences, _phrase_index(p["words"]))
     problems += _rule_code_spans(outside)
     problems += _rule_mentions(outside)
     problems += _rule_spdx(outside)
@@ -1518,6 +1627,31 @@ def _wrap_names(text, index):
     return _edit(text, spans, lambda span: "`" + span + "`")
 
 
+def _swap_words(text, index):
+    low = _flat(_shield(text))
+    if low is None:
+        return text
+    spans = []
+    for a, b, (phrase, swap, kind, name) in _phrase_hits(low, index):
+        old = text[a:b]
+        if old != low[a:b] and old != low[a].upper() + low[a + 1:b]:
+            continue
+        new = swap[0].upper() + swap[1:] if old[0].isupper() else swap
+        article = re.search(r"\b(an?) +$", text[max(0, a - 12):a], re.I)
+        if article and (old[0].lower() in "aeiou") != (new[0].lower() in "aeiou"):
+            continue
+        if _negated(old) and not _negated(new):
+            continue
+        spans.append((a, b, new))
+    out, pos = [], 0
+    for a, b, new in spans:
+        out.append(text[pos:a])
+        out.append(new)
+        pos = b
+    out.append(text[pos:])
+    return "".join(out)
+
+
 def _name_index(names):
     index = {}
     for name in names:
@@ -1606,6 +1740,7 @@ def fix_text(text, profile=None, exempt=frozenset()):
     cn = p.get("code_names") or {}
     index = _name_index(list(cn.get("checks") or []) + list(cn.get("states") or []))
     quoted = bool(cn.get("quoted_tests"))
+    swaps = _phrase_index(p.get("words") or [], swaps=True) if p.get("word_swaps") else {}
     spaced, origin, ends = _gapped(lines, crs, exempt, footer)
     new = list(spaced)
     for kind, parts, _ in _blocks(spaced, footer):
@@ -1616,6 +1751,10 @@ def fix_text(text, profile=None, exempt=frozenset()):
                 out = _quoted_tests(out)
             if index:
                 out = _wrap_names(out, index)
+            if swaps:
+                swapped = _swap_words(out, swaps)
+                if _swap_words(swapped, swaps) == swapped:
+                    out = swapped
             pieces = out.split("\n")
             if out == joined or len(pieces) != len(parts):
                 continue
@@ -1926,7 +2065,7 @@ def main():
     st.add_argument("--repo", metavar="OWNER/NAME", help="the repo profile from the config file to use; without it, default_repo is used")
     st.add_argument("--kind", metavar="NAME", help="a kind inside the repo profile, such as tracker; it overrides only the keys it names")
     st.add_argument("--write", action="store_true", help="change the file; without it nothing is written")
-    fi = sub.add_parser("fix", help="make the safe mechanical edits to a draft", description="Makes the safe mechanical edits to the prose of a draft: takes the backticks off a lone commit sha or URL, puts a blank line inside <details> where GitHub needs one, and, if the repo profile has code_names, turns quoted test names, CI check names and CI states into inline code. It never touches code blocks, comments, tables, quotes, link text, headings, checkboxes, template lines or the footer. Prints the changes as a diff, and writes the file only with --write. Exits 0 when it is done (and prints nothing when there is nothing to fix), 1 when it refuses to change a draft and 2 when it cannot run.")
+    fi = sub.add_parser("fix", help="make the safe mechanical edits to a draft", description="Makes the safe mechanical edits to the prose of a draft: takes the backticks off a lone commit sha or URL, puts a blank line inside <details> where GitHub needs one, and, if the repo profile has code_names, turns quoted test names, CI check names and CI states into inline code, and with word_swaps makes the one-for-one swaps from its word lists. It never touches code blocks, comments, tables, quotes, link text, headings, checkboxes, template lines or the footer. Prints the changes as a diff, and writes the file only with --write. Exits 0 when it is done (and prints nothing when there is nothing to fix), 1 when it refuses to change a draft and 2 when it cannot run.")
     fi.add_argument("draft", help="the draft file to change")
     fi.add_argument("--repo", metavar="OWNER/NAME", help="the repo profile from the config file to use; without it, default_repo is used")
     fi.add_argument("--kind", metavar="NAME", help="a kind inside the repo profile, such as tracker; it overrides only the keys it names")
