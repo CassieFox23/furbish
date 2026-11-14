@@ -694,6 +694,33 @@ class TestCheckDetails(unittest.TestCase):
     def test_folds_inside_code_are_ignored(self):
         self.assertEqual(probs("```\n<details>\n<summary>x</summary>\ntext\n</details>\n```\n"), [])
 
+    def test_folds_inside_a_raw_html_block_are_left_as_they_are(self):
+        for tag in ("pre", "PRE", "script", "style", "textarea"):
+            for d in (f"<{tag}>\n<details>\n<summary>Title</summary>\nbody text\n</details>\n</{tag}>\n", f"Intro.\n\n<{tag} class=x>\n<details>\n<summary>Title</summary>\nbody text\n</details>\n"):
+                for nl in ("\n", "\r\n"):
+                    x = d.replace("\n", nl)
+                    self.assertEqual(probs(x), [], (tag, x))
+                    self.assertEqual(fx(x), x, (tag, x))
+
+    def test_a_fold_after_a_raw_html_block_is_still_checked(self):
+        fold = "<details>\n<summary>Log</summary>\nBody.\n</details>\n"
+        for before in ("<pre>\nx\n</pre>\n\n", "<pre>x</pre>\n", "<pre>\nx\n</pre>\nText.\n\n"):
+            d = before + fold
+            n = before.count("\n")
+            self.assertEqual(probs(d), [(n + 2, "details-blank"), (n + 4, "details-blank")], before)
+            self.assertEqual(fx(d), before + "<details>\n<summary>Log</summary>\n\nBody.\n\n</details>\n", before)
+
+    def test_a_pre_inside_a_fold_still_needs_the_blank_line_after_the_summary(self):
+        d = "<details>\n<summary>Log</summary>\nSome **bold** text.\n<pre>\nx\n</pre>\n\n</details>\n"
+        self.assertEqual(probs(d), [(2, "details-blank")])
+
+    def test_a_pre_in_code_a_comment_or_indented_code_starts_nothing(self):
+        fold = "<details>\n<summary>Log</summary>\nBody.\n</details>\n"
+        for before in ("```\n<pre>\n```\n\n", "<!-- <pre> -->\n\n", "<!--\n<pre>\n-->\n\n", "Text.\n\n    <pre>\n\n", "`<pre>` opens a block.\n\n"):
+            d = before + fold
+            n = before.count("\n")
+            self.assertEqual(probs(d), [(n + 2, "details-blank"), (n + 4, "details-blank")], before)
+
 
 class TestCheckSpdx(unittest.TestCase):
     def test_informal_licence_names_are_flagged(self):

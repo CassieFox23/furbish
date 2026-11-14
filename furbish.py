@@ -121,7 +121,7 @@ class _IndentedCode:
         return False
 
 
-def _blocks(lines, footer, raw=True):
+def _blocks(lines, footer, raw=True, spans=None):
     blocks = []
     cur = None
     fence = None
@@ -131,6 +131,8 @@ def _blocks(lines, footer, raw=True):
     html = 0
     icode = _IndentedCode()
     for no, line in enumerate(lines, 1):
+        if html == 1 and spans is not None:
+            spans.add(no)
         base = 0
         if no == 1 and line.startswith("\ufeff"):
             line = line[1:]
@@ -185,6 +187,8 @@ def _blocks(lines, footer, raw=True):
         if raw and not html and stripped[0] == "<":
             if _HTML_RAW.match(line):
                 html = 1
+                if spans is not None:
+                    spans.add(no)
             elif _HTML_BLOCK.match(line) or (cur is None and _HTML_TAG_LINE.fullmatch(line)):
                 html = 6
         if html:
@@ -969,7 +973,13 @@ def _rule_spdx(outside):
     return out
 
 
-def _details_gaps(lines, outside):
+def _raw_html_lines(lines, footer):
+    spans = set()
+    _blocks(lines, footer, spans=spans)
+    return spans
+
+
+def _details_gaps(lines, outside, footer):
     out = []
     for no, line in outside:
         if "</" not in line:
@@ -979,11 +989,14 @@ def _details_gaps(lines, outside):
             out.append((no, "after"))
         if "</details>" in low and no > 1 and lines[no - 2].strip():
             out.append((no, "before"))
+    if out:
+        raw = _raw_html_lines(lines, footer)
+        out = [g for g in out if g[0] not in raw]
     return out
 
 
-def _rule_details(lines, outside):
-    return [Problem(no, "", "details-blank", f"a blank line is needed {side} {'</summary>' if side == 'after' else '</details>'} or the text inside will not be formatted") for no, side in _details_gaps(lines, outside)]
+def _rule_details(lines, outside, footer):
+    return [Problem(no, "", "details-blank", f"a blank line is needed {side} {'</summary>' if side == 'after' else '</details>'} or the text inside will not be formatted") for no, side in _details_gaps(lines, outside, footer)]
 
 
 def _cleaned(text):
@@ -1043,7 +1056,7 @@ def check(text, profile=None, post=False, exempt=frozenset()):
     problems += _rule_code_spans(outside)
     problems += _rule_mentions(outside)
     problems += _rule_spdx(outside)
-    problems += _rule_details(lines, outside)
+    problems += _rule_details(lines, outside, footer)
     if post:
         problems += _rule_grade(lines, located, exempt, _grade_skip(p))
     problems.sort(key=lambda q: q.line)
@@ -1535,8 +1548,8 @@ def _shape(lines, footer, raw=True):
     return [("para" if kind == "html" else kind, level, len(parts)) for kind, parts, level in _blocks(lines, footer, raw)]
 
 
-def _gapped(lines, crs, exempt):
-    gaps = _details_gaps(lines, list(_outside_code(lines)))
+def _gapped(lines, crs, exempt, footer=None):
+    gaps = _details_gaps(lines, list(_outside_code(lines)), footer)
     before = {no for no, side in gaps if side == "before" and _gap_line(lines[no - 1], exempt, False)}
     after = {no for no, side in gaps if side == "after" and _gap_line(lines[no - 1], exempt, True)}
     spaced, origin, ends = [], [], []
@@ -1560,7 +1573,7 @@ def fix_text(text, profile=None, exempt=frozenset()):
     cn = p.get("code_names") or {}
     index = _name_index(list(cn.get("checks") or []) + list(cn.get("states") or []))
     quoted = bool(cn.get("quoted_tests"))
-    spaced, origin, ends = _gapped(lines, crs, exempt)
+    spaced, origin, ends = _gapped(lines, crs, exempt, footer)
     new = list(spaced)
     for kind, parts, _ in _blocks(spaced, footer):
         if kind in ("para", "list") and _fixable(spaced, kind, parts, exempt):
