@@ -918,7 +918,7 @@ def _rule_length(text):
     if len(data) <= GITHUB_MAX_BODY:
         return []
     line = data.count(b"\n", 0, GITHUB_MAX_BODY) + 1
-    return [Problem(line, "", "length", f"the draft is {len(data):,} bytes long (a plain letter is 1 byte, an accented letter 2, an emoji 4), {len(data) - GITHUB_MAX_BODY:,} over GitHub's limit of {GITHUB_MAX_BODY:,} for one post or comment, and it goes over on this line; cut it down, or move the rest into a second comment")]
+    return [Problem(line, "", "length", f"the draft is {len(data):,} bytes long, {len(data) - GITHUB_MAX_BODY:,} over GitHub's limit of {GITHUB_MAX_BODY:,} for one post or comment, and it goes over on this line; cut it down, or move the rest into a second comment. furbish counts bytes to be safe: a plain letter is 1, an accented letter 2, a curly quote or a dash 3, an emoji 4")]
 
 
 def _rule_footer(lines, footer):

@@ -535,7 +535,15 @@ class TestCheckLength(unittest.TestCase):
         d = self.draft(1)
         (p,) = furbish.check(d)
         self.assertEqual((p.line, p.sid, p.rule), (656, "", "length"))
-        self.assertEqual(p.message, "the draft is 65,537 bytes long (a plain letter is 1 byte, an accented letter 2, an emoji 4), 1 over GitHub's limit of 65,536 for one post or comment, and it goes over on this line; cut it down, or move the rest into a second comment")
+        self.assertEqual(p.message, "the draft is 65,537 bytes long, 1 over GitHub's limit of 65,536 for one post or comment, and it goes over on this line; cut it down, or move the rest into a second comment. furbish counts bytes to be safe: a plain letter is 1, an accented letter 2, a curly quote or a dash 3, an emoji 4")
+
+    def test_the_line_is_the_one_holding_the_first_byte_over(self):
+        (p,) = furbish.check("a" * 65535 + "\n" + "b")
+        self.assertEqual(p.line, 2)
+        (p,) = furbish.check("a" * 65536 + "\n" + "b")
+        self.assertEqual(p.line, 1)
+        (p,) = furbish.check("\u2014" * 21846)
+        self.assertTrue(p.message.startswith("the draft is 65,538 bytes long"), p.message)
 
     def test_accents_and_emoji_count_in_utf8_bytes(self):
         self.assertEqual(furbish.check("\U0001f98a" * 16384), [])
@@ -554,6 +562,9 @@ class TestCheckLength(unittest.TestCase):
         (p,) = furbish.check(("\u00e9" * 50 + "\n") * 700)
         self.assertEqual((p.line, p.rule), (649, "length"))
         self.assertEqual(furbish.check("\ud83e" * 10), [])
+        (p,) = furbish.check("a" * 65536 + "\ud83e")
+        self.assertEqual((p.line, p.rule), (1, "length"))
+        self.assertTrue(p.message.startswith("the draft is 65,539 bytes long"), p.message)
 
     def test_the_line_breaks_are_counted_as_written(self):
         d = ("x" * 98 + "\r\n") * 655 + "y" * 36
