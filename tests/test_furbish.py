@@ -304,8 +304,8 @@ class TestLoadConfig(ConfigCase):
         self.assertEqual(p["keep_negation"], ["Not run"])
         self.assertEqual(p["code_names"], {"quoted_tests": True, "checks": ["Example lint", "Example unit tests"], "states": ["passed", "failed", "skipped"]})
         self.assertEqual(p["external"], [
-            {"name": "example-lines", "mode": "lines", "command": ["example-checker", "--plain"], "fail": "^FAIL"},
-            {"name": "example-json", "mode": "json", "command": ["example-json-checker"], "fail": None},
+            {"name": "example-lines", "mode": "lines", "command": ["example-checker", "--plain"], "fail": "^FAIL", "fix": []},
+            {"name": "example-json", "mode": "json", "command": ["example-json-checker"], "fail": None, "fix": []},
         ])
 
     def test_omitted_keys_get_plain_defaults(self):
@@ -1497,6 +1497,85 @@ class TestRunExternal(ExternalCase):
         t = time.perf_counter()
         self.assertEqual(len(furbish.run_external([e], self.draft(), timeout=30)), 1)
         self.assertLess(time.perf_counter() - t, 10)
+
+
+HARPER_OUT = [{"file": "draft.md", "lint_count": 4, "lints": [
+    {"rule": "RepeatedWords", "kind": "Repetition", "span": {"char_start": 8, "char_end": 15}, "line": 1, "column": 9, "message": "Did you mean to repeat this word?", "priority": 128, "suggestions": ["Replace with: “the”"], "matched_text": "the the"},
+    {"rule": "AnA", "kind": "Miscellaneous", "span": {"char_start": 30, "char_end": 31}, "line": 3, "column": 8, "message": "Incorrect indefinite article.", "priority": 31, "suggestions": ["Replace with: “an”"], "matched_text": "a"},
+    {"rule": "SpellCheck", "kind": "Spelling", "span": {"char_start": 40, "char_end": 47}, "line": 3, "column": 18, "message": "Did you mean to spell `recieve` this way?", "priority": 63, "suggestions": ["Replace with: “receive”", "Replace with: “relieve”"], "matched_text": "recieve"},
+    {"rule": "Odd", "kind": "Miscellaneous", "line": 5, "column": 1, "message": "No suggestion here.", "suggestions": [], "matched_text": "Done"},
+]}]
+HARPER_DRAFT = "This is the the plan.\n\nWe hit a error when we recieve it.\n\nDone.\n"
+
+
+class TestHarper(ExternalCase):
+    def harper(self, out=HARPER_OUT, rc=1, fix=()):
+        code = f"import json, sys\nprint(json.dumps({out!r}))\nsys.exit({rc})\n"
+        e = self.entry(code, mode="harper", name="harper")
+        e["fix"] = list(fix)
+        return e
+
+    def test_check_reads_harpers_json(self):
+        got = furbish.run_external([self.harper()], self.draft(HARPER_DRAFT))
+        self.assertEqual([(p.line, p.rule, p.message) for p in got], [
+            (1, "harper", 'harper: Did you mean to repeat this word? It suggests "the". (RepeatedWords)'),
+            (3, "harper", 'harper: Incorrect indefinite article. It suggests "an". (AnA)'),
+            (3, "harper", 'harper: Did you mean to spell `recieve` this way? It suggests "receive". (SpellCheck)'),
+            (5, "harper", "harper: No suggestion here. (Odd)"),
+        ])
+        self.assertEqual(furbish.run_external([self.harper([{"file": "d", "lint_count": 0, "lints": []}], rc=0)], self.draft()), [])
+
+    def test_a_shape_furbish_does_not_read_is_an_error(self):
+        for out in ({"lints": []}, [{"file": "d"}], [{"lints": ["x"]}], [{"lints": {}}]):
+            with self.assertRaises(furbish.ExternalError, msg=out) as cm:
+                furbish.run_external([self.harper(out)], self.draft())
+            self.assertEqual(str(cm.exception), "harper: printed JSON in a shape furbish does not read")
+        odd = [{"lints": [{"line": "x", "rule": 3, "message": "", "suggestions": "no"}]}]
+        self.assertEqual([(p.line, p.message) for p in furbish.run_external([self.harper(odd)], self.draft())], [(0, "harper: reported a problem")])
+
+    def test_fix_takes_only_the_allowed_rules_with_one_suggestion(self):
+        draft = self.draft(HARPER_DRAFT)
+        self.assertEqual(furbish.harper_edits([self.harper()], draft), [])
+        self.assertEqual(furbish.harper_edits([self.harper(fix=["RepeatedWords", "AnA", "SpellCheck", "Odd"])], draft), [(0, 8, "the the", "the"), (2, 7, "a", "an")])
+        self.assertEqual(furbish.fix_text(HARPER_DRAFT, prof(), edits=[(0, 8, "the the", "the"), (2, 7, "a", "an")]).text, "This is the plan.\n\nWe hit an error when we recieve it.\n\nDone.\n")
+
+    def test_an_edit_lands_only_where_fix_already_works(self):
+        for d, edit in (
+            ("Run `the the` now.\n", (0, 5, "the the", "the")),
+            ("See [the the](https://example.com) now.\n", (0, 5, "the the", "the")),
+            ('He said "the the" twice.\n', (0, 9, "the the", "the")),
+            ("# This is the the plan\n", (0, 10, "the the", "the")),
+            ("> This is the the plan.\n", (0, 10, "the the", "the")),
+            ("This is the the plan.\n", (0, 3, "the the", "the")),
+            ("This is the the plan.\n", (0, 8, "the the", "the *the*")),
+            ("This is not here.\n", (0, 8, "not here", "here")),
+            ("This took 12 s.\n", (0, 10, "12 s", "s")),
+            ("This is the the plan.\n", (0, 8, "the the", "")),
+        ):
+            self.assertEqual(furbish.fix_text(d, prof(), edits=[edit]).text, d, (d, edit))
+
+    def test_an_edit_keeps_line_endings_and_finds_its_line_after_added_blank_lines(self):
+        d = "<details>\n<summary>Log</summary>\nThis is the the plan.\n</details>\n"
+        self.assertEqual(furbish.fix_text(d, prof(), edits=[(2, 8, "the the", "the")]).text, "<details>\n<summary>Log</summary>\n\nThis is the plan.\n\n</details>\n")
+        self.assertEqual(furbish.fix_text("One line.\r\nThis is the the plan.\r\n", prof(), edits=[(1, 8, "the the", "the")]).text, "One line.\r\nThis is the plan.\r\n")
+
+    def test_the_fix_key_is_for_harper_only(self):
+        p = self.load('[repo."a/b"]\n[[repo."a/b".external]]\nname = "h"\nmode = "harper"\ncommand = ["harper-cli", "lint", "--format", "json"]\nfix = ["AnA"]\n')["repo"]["a/b"]
+        self.assertEqual(p["external"], [{"name": "h", "mode": "harper", "command": ["harper-cli", "lint", "--format", "json"], "fail": None, "fix": ["AnA"]}])
+        self.bad('[repo."a/b"]\n[[repo."a/b".external]]\nname = "v"\nmode = "json"\ncommand = ["vale"]\nfix = ["AnA"]\n', "fix is only for mode 'harper'")
+        self.bad('[repo."a/b"]\n[[repo."a/b".external]]\nname = "h"\nmode = "harper"\ncommand = ["h"]\nfix = [""]\n', "fix in a/b must not contain empty strings")
+        self.bad('[repo."a/b"]\n[[repo."a/b".external]]\nname = "h"\nmode = "harper"\ncommand = ["h"]\nfail = "x"\n', "fail is not allowed when mode is 'harper'")
+        self.bad('[repo."a/b"]\n[[repo."a/b".external]]\nname = "h"\nmode = "other"\ncommand = ["h"]\n', "must be 'lines', 'json' or 'harper'")
+
+    def test_the_fix_command_runs_harper_and_applies_its_edits(self):
+        code = f"import json, sys\nprint(json.dumps({HARPER_OUT!r}))\nsys.exit(1)\n"
+        script = self.script(code, "harper.py")
+        cfg = self.write(f'[repo."a/b"]\n[[repo."a/b".external]]\nname = "harper"\nmode = "harper"\ncommand = {json.dumps([sys.executable, "-I", script])}\nfix = ["RepeatedWords", "AnA"]\n', "cfg.toml")
+        draft = self.draft(HARPER_DRAFT)
+        r = subprocess.run([sys.executable, "-I", SCRIPT, "fix", "--repo", "a/b", "--write", draft], capture_output=True, text=True, env={"FURBISH_CONFIG": cfg, "HOME": self.tmp})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(draft) as f:
+            self.assertEqual(f.read(), "This is the plan.\n\nWe hit an error when we recieve it.\n\nDone.\n")
 
 
 class TestCheckCliWithCheckers(ExternalCase):

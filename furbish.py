@@ -566,12 +566,13 @@ def _validate_external(ext, repo):
         if not isinstance(entry, dict):
             raise ConfigError(f"external entry in {repo} must be a table")
         for k in entry:
-            if k not in ("name", "mode", "command", "fail"):
+            if k not in ("name", "mode", "command", "fail", "fix"):
                 raise ConfigError(f"unknown key {k} in external entry in {repo}")
         name = entry.get("name")
         mode = entry.get("mode")
         command = entry.get("command")
         fail = entry.get("fail")
+        fix = entry.get("fix", [])
         if name is None:
             raise ConfigError(f"name is required in external entry in {repo}")
         if not isinstance(name, str) or not name:
@@ -581,8 +582,8 @@ def _validate_external(ext, repo):
         seen_names.add(name)
         if mode is None:
             raise ConfigError(f"mode is required in external entry in {repo}")
-        if mode not in ("lines", "json"):
-            raise ConfigError(f"mode in external entry in {repo} must be 'lines' or 'json'")
+        if mode not in ("lines", "json", "harper"):
+            raise ConfigError(f"mode in external entry in {repo} must be 'lines', 'json' or 'harper'")
         if command is None:
             raise ConfigError(f"command is required in external entry in {repo}")
         if not isinstance(command, list) or not command:
@@ -601,10 +602,12 @@ def _validate_external(ext, repo):
                 re.compile(fail)
             except (re.error, OverflowError, RecursionError):
                 raise ConfigError(f"fail in external entry in {repo} is not a valid regex")
-        else:
-            if fail is not None:
-                raise ConfigError(f"fail is not allowed when mode is 'json' in external entry in {repo}")
-        result.append({"name": name, "mode": mode, "command": list(command), "fail": fail if mode == "lines" else None})
+        elif fail is not None:
+            raise ConfigError(f"fail is not allowed when mode is '{mode}' in external entry in {repo}")
+        if "fix" in entry and mode != "harper":
+            raise ConfigError(f"fix is only for mode 'harper', in external entry {name} in {repo}")
+        _validate_list_of_strings("fix", fix, repo)
+        result.append({"name": name, "mode": mode, "command": list(command), "fail": fail if mode == "lines" else None, "fix": list(fix)})
     return result
 
 
@@ -1301,6 +1304,45 @@ def _parse_json_alerts(name, data):
     return problems
 
 
+_HARPER_SWAP = re.compile("Replace with: \u201c(.*)\u201d", re.S)
+
+
+def _harper_lints(name, stdout):
+    try:
+        data = json.loads(stdout)
+    except (ValueError, RecursionError):
+        raise ExternalError(f"{name}: printed something that is not JSON")
+    if not isinstance(data, list) or not all(isinstance(f, dict) and isinstance(f.get("lints"), list) for f in data):
+        raise ExternalError(f"{name}: printed JSON in a shape furbish does not read")
+    lints = [item for f in data for item in f["lints"]]
+    if not all(isinstance(item, dict) for item in lints):
+        raise ExternalError(f"{name}: printed JSON in a shape furbish does not read")
+    return lints
+
+
+def _harper_swaps(item):
+    got = item.get("suggestions")
+    if not isinstance(got, list):
+        return []
+    return [m.group(1) for m in (_HARPER_SWAP.fullmatch(x) if isinstance(x, str) else None for x in got) if m]
+
+
+def _harper_problems(name, lints):
+    problems = []
+    for item in lints:
+        line = item.get("line")
+        line_num = line if isinstance(line, int) and not isinstance(line, bool) and line >= 0 else 0
+        rule = item.get("rule") if isinstance(item.get("rule"), str) else ""
+        msg = item.get("message")
+        if not isinstance(msg, str) or not msg:
+            msg = "reported a problem"
+        swaps = _harper_swaps(item)
+        if swaps:
+            msg = f'{msg} It suggests "{swaps[0]}".'
+        problems.append(Problem(line_num, "", name, f"{name}: {msg} ({rule})" if rule else f"{name}: {msg}"))
+    return problems
+
+
 def _first_line(text):
     for line in text.splitlines():
         if line.strip():
@@ -1352,9 +1394,8 @@ def _signalled(signum, frame):
     raise SystemExit(128 + signum)
 
 
-def _run_entry(entry, draft_path, timeout, cap=EXTERNAL_MAX_OUTPUT):
+def _capture(entry, draft_path, timeout, cap):
     name = entry["name"]
-    mode = entry["mode"]
     command = entry["command"]
     argv = list(command) + [draft_path]
     try:
@@ -1399,19 +1440,42 @@ def _run_entry(entry, draft_path, timeout, cap=EXTERNAL_MAX_OUTPUT):
     rc = proc.returncode
     if rc not in (0, 1):
         raise ExternalError(f"{name}: stopped with status {rc}: {_why(stdout, stderr)}")
+    if entry["mode"] != "lines" and not stdout.strip() and rc == 1:
+        raise ExternalError(f"{name}: stopped with status 1 and printed nothing: {_why(stdout, stderr)}")
+    return stdout
+
+
+def _run_entry(entry, draft_path, timeout, cap=EXTERNAL_MAX_OUTPUT):
+    name = entry["name"]
+    mode = entry["mode"]
+    stdout = _capture(entry, draft_path, timeout, cap)
     if mode == "lines":
         fail = entry["fail"]
         if fail is None:
             return []
         fail_re = re.compile(fail)
         return _parse_lines_output(name, draft_path, stdout, fail_re)
-    else:
+    if not stdout.strip():
+        return []
+    if mode == "harper":
+        return _harper_problems(name, _harper_lints(name, stdout))
+    return _parse_json_alerts(name, _parse_json_output(name, stdout))
+
+
+def harper_edits(entries, draft_path, timeout=EXTERNAL_TIMEOUT, cap=EXTERNAL_MAX_OUTPUT):
+    edits = []
+    for entry in entries:
+        if entry["mode"] != "harper" or not entry.get("fix"):
+            continue
+        stdout = _capture(entry, draft_path, timeout, cap)
         if not stdout.strip():
-            if rc == 1:
-                raise ExternalError(f"{name}: stopped with status 1 and printed nothing: {_why(stdout, stderr)}")
-            return []
-        data = _parse_json_output(name, stdout)
-        return _parse_json_alerts(name, data)
+            continue
+        for item in _harper_lints(entry["name"], stdout):
+            swaps = _harper_swaps(item)
+            line, column, old = item.get("line"), item.get("column"), item.get("matched_text")
+            if item.get("rule") in entry["fix"] and len(swaps) == 1 and isinstance(old, str) and old and all(isinstance(x, int) and not isinstance(x, bool) and x >= 1 for x in (line, column)):
+                edits.append((line - 1, column - 1, old, swaps[0]))
+    return edits
 
 
 def run_external(entries, draft_path, timeout=EXTERNAL_TIMEOUT, cap=EXTERNAL_MAX_OUTPUT):
@@ -1763,7 +1827,34 @@ def _gapped(lines, crs, exempt, footer=None):
     return spaced, origin, ends
 
 
-def fix_text(text, profile=None, exempt=frozenset()):
+_EDIT_MARKUP = re.compile(r"[`*_\[\]<>|#\\~\n\t]")
+
+
+def _apply_edits(joined, parts, origin, at):
+    spans, shield, pos = [], None, 0
+    for no, content, col in parts:
+        for c0, old, new in at.get(origin[no - 1], ()):
+            k = pos + c0 - col
+            if not (col <= c0 and c0 + len(old) <= col + len(content)) or joined[k:k + len(old)] != old:
+                continue
+            if shield is None:
+                shield = _shield(joined)
+            if "\x00" in shield[k:k + len(old)] or not new or _EDIT_MARKUP.search(new) or (_negated(old) and not _negated(new)) or _lost(old, new):
+                continue
+            spans.append((k, k + len(old), new))
+        pos += len(content) + 1
+    out, last = [], 0
+    for a, b, new in sorted(spans):
+        if a < last:
+            continue
+        out.append(joined[last:a])
+        out.append(new)
+        last = b
+    out.append(joined[last:])
+    return "".join(out)
+
+
+def fix_text(text, profile=None, exempt=frozenset(), edits=()):
     p = profile or {}
     raw = text.split("\n")
     crs = [l.endswith("\r") for l in raw[:-1]] + [False]
@@ -1774,11 +1865,14 @@ def fix_text(text, profile=None, exempt=frozenset()):
     quoted = bool(cn.get("quoted_tests"))
     swaps = _phrase_index(p.get("words") or [], swaps=True) if p.get("word_swaps") else {}
     spaced, origin, ends = _gapped(lines, crs, exempt, footer)
+    at = {}
+    for line, column, old, rep in edits:
+        at.setdefault(line, []).append((column, old, rep))
     new = list(spaced)
     for kind, parts, _ in _blocks(spaced, footer):
         if kind in ("para", "list") and _fixable(spaced, kind, parts, exempt):
             joined = "\n".join(content for _, content, _ in parts)
-            out = _unwrap(joined)
+            out = _unwrap(_apply_edits(joined, parts, origin, at) if at else joined)
             if quoted:
                 out = _quoted_tests(out)
             if swaps:
@@ -2041,7 +2135,8 @@ def _run_fix(args):
         profile = pick_profile(config, args.repo, args.kind)
         exempt = _template_lines(profile)
         text = _read_text(args.draft, True)
-        fixed = fix_text(text, profile, exempt)
+        edits = harper_edits(profile["external"], os.path.abspath(args.draft)) if profile else []
+        fixed = fix_text(text, profile, exempt, edits)
         if fixed.text != text and args.write:
             _write_text(args.draft, fixed.text)
     except Refused as e:
@@ -2097,7 +2192,7 @@ def main():
     st.add_argument("--repo", metavar="OWNER/NAME", help="the repo profile from the config file to use; without it, default_repo is used")
     st.add_argument("--kind", metavar="NAME", help="a kind inside the repo profile, such as tracker; it overrides only the keys it names")
     st.add_argument("--write", action="store_true", help="change the file; without it nothing is written")
-    fi = sub.add_parser("fix", help="make the safe mechanical edits to a draft", description="Makes the safe mechanical edits to the prose of a draft: takes the backticks off a lone commit sha or URL, puts a blank line inside <details> where GitHub needs one, and, if the repo profile has code_names, turns quoted test names, CI check names and CI states into inline code, and with word_swaps makes the one-for-one swaps from its word lists. It never touches code blocks, comments, tables, quotes, link text, headings, checkboxes, template lines or the footer. Prints the changes as a diff, and writes the file only with --write. Exits 0 when it is done (and prints nothing when there is nothing to fix), 1 when it refuses to change a draft and 2 when it cannot run.")
+    fi = sub.add_parser("fix", help="make the safe mechanical edits to a draft", description="Makes the safe mechanical edits to the prose of a draft: takes the backticks off a lone commit sha or URL, puts a blank line inside <details> where GitHub needs one, and, if the repo profile has code_names, turns quoted test names, CI check names and CI states into inline code, and with word_swaps makes the one-for-one swaps from its word lists, and the Harper fixes an external entry's fix list allows. It never touches code blocks, comments, tables, quotes, link text, headings, checkboxes, template lines or the footer. Prints the changes as a diff, and writes the file only with --write. Exits 0 when it is done (and prints nothing when there is nothing to fix), 1 when it refuses to change a draft and 2 when it cannot run.")
     fi.add_argument("draft", help="the draft file to change")
     fi.add_argument("--repo", metavar="OWNER/NAME", help="the repo profile from the config file to use; without it, default_repo is used")
     fi.add_argument("--kind", metavar="NAME", help="a kind inside the repo profile, such as tracker; it overrides only the keys it names")
