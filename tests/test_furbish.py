@@ -1717,6 +1717,30 @@ class TestSetCli(ConfigCase):
         self.assertEqual(self.read(os.path.join(self.tmp, "draft.md")), b"One here. Deux.\n")
 
 
+class TestHtmlBlocksAndFootnotes(unittest.TestCase):
+    def test_text_in_a_raw_html_block_is_still_prose_and_still_graded(self):
+        self.assertEqual(texts("<div>\nSome words here.\n</div>\n"), ["Some words here."])
+        self.assertEqual(probs("<div>\n" + HARD + "\n</div>\n", post=True), [(2, "grade")])
+
+    def test_inside_a_raw_html_block_list_and_quote_marks_are_plain_text(self):
+        self.assertEqual(texts("<div>\n- one two\n> three four.\n</div>\n"), ["- one two > three four."])
+
+    def test_a_footnote_label_is_not_part_of_its_sentence(self):
+        self.assertEqual(texts("Text here.[^1]\n\n[^1]: The note says this.\n")[-1], "The note says this.")
+        self.assertEqual(texts("Text here.\n[^note]: A second note.\n"), ["Text here.", "A second note."])
+        self.assertEqual(texts("[ref]: https://example.com\n"), [])
+
+    def test_set_keeps_a_footnote_label(self):
+        self.assertEqual(furbish.set_sentence("Text here.[^1]\n\n[^1]: The note says this.\n", "S2", "A new note.").text, "Text here.[^1]\n\n[^1]: A new note.\n")
+
+    def test_hostile_html_lines_stay_fast(self):
+        for d in ("<a " + "b " * 80000 + "!\n", "<a b='" * 40000 + "\n", "<div>\n" + "x\n" * 100000, "<pre>\n" * 50000, "[^" * 100000 + "\n"):
+            t = time.perf_counter()
+            furbish.fix_text(d)
+            furbish.read_prose(d)
+            self.assertLess(time.perf_counter() - t, 2.0, d[:12])
+
+
 class TestSetReviewFixes(unittest.TestCase):
     KN = {"keep_negation": ["Security"]}
 
@@ -1836,7 +1860,7 @@ class TestSetReviewFixes(unittest.TestCase):
         self.assertEqual(texts("> - [ ] Task one.\n> * [x] Task two.\n"), ["Task one.", "Task two."])
         self.assertEqual(texts("- Alpha one\n-\n- beta two.\n"), ["Alpha one", "beta two."])
         self.assertEqual(texts("See [x] here.\n\n[x]: https://example.com/a\n"), ["See [x] here."])
-        self.assertEqual(texts("A note[^1].\n\n[^1]: The note text.\n"), ["A note[^1].", "[^1]: The note text."])
+        self.assertEqual(texts("A note[^1].\n\n[^1]: The note text.\n"), ["A note[^1].", "The note text."])
         self.assertEqual(texts("See [x] here.\n[x]: not a definition here.\n"), ["See [x] here.", "[x]: not a definition here."])
 
     def test_the_reader_knows_more_kinds_of_heading(self):
@@ -1965,6 +1989,24 @@ class TestFixText(unittest.TestCase):
         for t in ("The `deadbeef` and `12345678` and `abcdef` words.", "Use `ABCDEF1234` here.", "Run `git show abc1234` now.", "Run `curl https://example.com` now.", "A `abc1234 def5678` pair.", "The `--flag` option."):
             self.assertEqual(fx(t + "\n"), t + "\n", t)
 
+    def test_raw_html_blocks_are_left_alone_because_github_shows_backticks_there_as_they_are(self):
+        for d in ("<div>\nFixed in `abc1234` and \"test_one\" passed.\n</div>\n", '<p align="center">Fixed in `abc1234` today.</p>\n', "<pre>\nFixed in `abc1234` today.\n\nStill `abc1234` here.\n</pre>\n", "Text first.\n<DIV class=x>\nFixed in `abc1234` today.\n</DIV>\n", '<img src="a.png" width="10">\nFixed in `abc1234` today.\n'):
+            self.assertEqual(fx(d, CN), d, d)
+
+    def test_a_blank_line_ends_a_raw_html_block(self):
+        self.assertEqual(fx("<div>\n\nFixed in `abc1234` today.\n\n</div>\n"), "<div>\n\nFixed in abc1234 today.\n\n</div>\n")
+        self.assertEqual(fx("<pre>\nx\n</pre>\nFixed in `abc1234` today.\n"), "<pre>\nx\n</pre>\nFixed in abc1234 today.\n")
+
+    def test_a_lone_inline_tag_does_not_interrupt_a_paragraph(self):
+        self.assertEqual(fx("Fixed in `abc1234` today.\n<span>\n"), "Fixed in abc1234 today.\n<span>\n")
+
+    def test_text_right_under_a_summary_is_fixed_once_the_blank_line_is_in(self):
+        d = "<details>\n<summary>Logs</summary>\nFixed in `abc1234`.\n</details>\n"
+        self.assertEqual(fx(d), "<details>\n<summary>Logs</summary>\n\nFixed in abc1234.\n\n</details>\n")
+
+    def test_a_footnote_is_fixed_after_its_label(self):
+        self.assertEqual(fx("Text here.[^1]\n\n[^1]: Fixed in `abc1234` today.\n"), "Text here.[^1]\n\n[^1]: Fixed in abc1234 today.\n")
+
     def test_an_upper_case_sha_keeps_its_backticks_because_github_would_not_link_it_bare(self):
         for t in ("Fixed in `C1217E711` today.", "Fixed in `C1217e711` today."):
             self.assertEqual(fx(t + "\n"), t + "\n", t)
@@ -2059,14 +2101,14 @@ class TestFixText(unittest.TestCase):
 
     def test_the_draft_keeps_its_shape(self):
         d = "# Title\n\nFixed in `abc1234`. It passed.\n\n- Item `def5678` failed.\n- Another one.\n\n> Quote passed.\n\n<details>\n<summary>x</summary>\nIn here.\n</details>\n"
-        shape = lambda t: [(k, lv, len(parts)) for k, parts, lv in furbish._blocks(t.split("\n"), None)]
+        shape = lambda t: furbish._shape(t.split("\n"), None)
         self.assertEqual(shape(fx(d, CN)), shape(d))
 
     def test_random_drafts_keep_their_shape_and_are_fixed_once(self):
         import random
         rnd = random.Random(7)
         bits = ["Fixed in", "`abc1234`", "`https://e.com/a`", "passed", "failed", "Example lint", '"test_a"', "[l](https://e.com)", "[`abc1234`](u)", "<details>", "</details>", "<summary>x</summary>", "</summary>", "```", "<!--", "-->", "> q", "| a |", "- item", "1. item", "# Head", "---", "===", "", "", "\t", "  ", "text here.", "More words.", "`x`", "``", "\u201ctest_b\u201d", "- [ ] box", "<b>", "</b>", "@someone", "`https://e.com/<!--`", "`https://e.com/<summary>`", "<summary>", "~~~", "`", "\\`", '"', "\u201c", "\u201d", "[a", "b]", "[ref][1]", "[1]: u", "\ufeff", "a | b", "passed`x`", "    "]
-        shape = lambda t: [(k, lv, len(parts)) for k, parts, lv in furbish._blocks(t.split("\n"), None)]
+        shape = lambda t: furbish._shape(t.split("\n"), None)
         refused = 0
         for _ in range(1500):
             d = "\n".join(" ".join(rnd.choice(bits) for _ in range(rnd.randint(0, 5))) for _ in range(rnd.randint(1, 9))) + "\n"
@@ -2075,7 +2117,8 @@ class TestFixText(unittest.TestCase):
             except furbish.Refused:
                 refused += 1
                 continue
-            self.assertEqual(shape(once), shape(d), d)
+            lines = d.split("\n")
+            self.assertEqual(shape(once), furbish._shape(furbish._gapped(lines, [False] * len(lines), frozenset())[0], None), d)
             self.assertEqual(fx(once, CN), once, d)
         self.assertLessEqual(refused, 10)
 
@@ -2679,7 +2722,9 @@ class TestFableReview(ConfigCase):
                 once = fx(d)
             except furbish.Refused:
                 continue
-            self.assertEqual([x.text.replace("`", "") for x in furbish.read_prose(once)], [x.text.replace("`", "") for x in furbish.read_prose(d)], d)
+            lines = d.split("\n")
+            gapped = "\n".join(furbish._gapped(lines, [False] * len(lines), frozenset())[0])
+            self.assertEqual([x.text.replace("`", "") for x in furbish.read_prose(once)], [x.text.replace("`", "") for x in furbish.read_prose(gapped)], d)
 
     def test_a_split_applied_with_set_gives_two_sentences_to_the_reader(self):
         for mid in ("; ", " - ", ", but ", "; https://example.com/documentation "):

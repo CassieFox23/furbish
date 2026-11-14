@@ -10,6 +10,10 @@ Located = namedtuple("Located", "sentence where kind level heading under span")
 _URL = re.compile(r"https?://\S*[^\s.,;:!?)\]\"']")
 _TAG = re.compile(r"<[/!A-Za-z][^<>]*>")
 _HTML_ONLY = re.compile(r"(?:<[/!A-Za-z][^<>]*>\s*)+")
+_HTML_RAW = re.compile(r" {0,3}<(?:script|pre|textarea|style)(?:[ \t>]|$)", re.I)
+_HTML_RAW_END = re.compile(r"</(?:script|pre|textarea|style)>", re.I)
+_HTML_BLOCK = re.compile(r" {0,3}</?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|section|source|title|summary|table|tbody|td|tfoot|th|thead|tr|track|ul)(?:[ \t>]|/>|$)", re.I)
+_HTML_TAG_LINE = re.compile(r" {0,3}(?:<[A-Za-z][A-Za-z0-9-]*(?:[ \t]+[A-Za-z_:][A-Za-z0-9:._-]*(?:[ \t]*=[ \t]*(?:[^ \t\x22'=<>`]+|'[^']*'|\x22[^\x22]*\x22))?)*[ \t]*/?>|</[A-Za-z][A-Za-z0-9-]*[ \t]*>)[ \t]*")
 _HEADING = re.compile(r" {0,3}(#{1,6})\s")
 _LIST = re.compile(r"\s*(?:[-*+]|\d+[.)])[ \t]")
 _EMPTY_ITEM = re.compile(r"\s*(?:[-*+]|\d+[.)])[ \t]*")
@@ -18,6 +22,7 @@ _THEMATIC = re.compile(r" {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*")
 _UNDERLINE = re.compile(r" {0,3}(?:=+|-+)[ \t]*")
 _TABLE_DELIM = re.compile(r"\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?")
 _REFDEF = re.compile(r" {0,3}\[(?!\^)[^\]]+\]:[ \t]*\S")
+_FOOTNOTE = re.compile(r" {0,3}\[\^[^\]\s]+\]:[ \t]*")
 _SPACES = re.compile(r"\s+")
 _STOPS = re.compile(r"[.!?]")
 _ABBR = {"e.g.", "i.e.", "vs.", "cf.", "mr.", "mrs.", "ms.", "dr.", "st."}
@@ -123,6 +128,7 @@ def _blocks(lines, footer):
     comment = False
     summary = False
     table = False
+    html = 0
     icode = _IndentedCode()
     for no, line in enumerate(lines, 1):
         base = 0
@@ -165,12 +171,32 @@ def _blocks(lines, footer):
         hid = _edit(line, _code_spans(line), _hide).lower()
         if "<summary" in hid:
             summary = "</summary>" not in hid
+            if not html and _HTML_BLOCK.match(line):
+                html = 6
             cur = None
             continue
         stripped = line.strip()
         if not stripped:
             cur = None
             table = False
+            if html != 1 and not whole.strip():
+                html = 0
+            continue
+        if not html and stripped[0] == "<":
+            if _HTML_RAW.match(line):
+                html = 1
+            elif _HTML_BLOCK.match(line) or (cur is None and _HTML_TAG_LINE.fullmatch(line)):
+                html = 6
+        if html:
+            if _HTML_ONLY.fullmatch(stripped):
+                cur = None
+            elif cur and cur[0] == "html":
+                cur[1].append((no, stripped, None if shift is None else shift + end_col - len(stripped)))
+            else:
+                cur = ["html", [(no, stripped, None if shift is None else shift + end_col - len(stripped))], 0]
+                blocks.append(cur)
+            if html == 1 and _HTML_RAW_END.search(line):
+                html = 0
             continue
         if "|" in stripped and _TABLE_DELIM.fullmatch(stripped):
             if cur is not None and cur[0] == "para" and "|" in cur[1][-1][1]:
@@ -197,6 +223,14 @@ def _blocks(lines, footer):
             continue
         if (c0 in "-*_" and _THEMATIC.fullmatch(line)) or (c0 in "-*+0123456789" and _EMPTY_ITEM.fullmatch(line)) or (c0 == "[" and cur is None and _REFDEF.match(line)):
             cur = None
+            continue
+        fm = _FOOTNOTE.match(line) if c0 == "[" else None
+        if fm:
+            t = line[fm.end():].strip()
+            cur = None
+            if t:
+                cur = ["para", [(no, t, None if shift is None else shift + end_col - len(t))], 0]
+                blocks.append(cur)
             continue
         hm = _HEADING.match(line)
         if hm:
@@ -1469,6 +1503,26 @@ def _fixable(lines, kind, parts, exempt):
     return True
 
 
+def _shape(lines, footer):
+    return [("para" if kind == "html" else kind, level, len(parts)) for kind, parts, level in _blocks(lines, footer)]
+
+
+def _gapped(lines, crs, exempt):
+    gaps = _details_gaps(lines, list(_outside_code(lines)))
+    before = {no for no, side in gaps if side == "before" and _gap_line(lines[no - 1], exempt, False)}
+    after = {no for no, side in gaps if side == "after" and _gap_line(lines[no - 1], exempt, True)}
+    spaced, origin, ends = [], [], []
+    for i, line in enumerate(lines):
+        if (i + 1) in before or i in after:
+            spaced.append("")
+            origin.append(None)
+            ends.append(crs[i - 1])
+        spaced.append(line)
+        origin.append(i)
+        ends.append(crs[i])
+    return spaced, origin, ends
+
+
 def fix_text(text, profile=None, exempt=frozenset()):
     p = profile or {}
     raw = text.split("\n")
@@ -1478,10 +1532,10 @@ def fix_text(text, profile=None, exempt=frozenset()):
     cn = p.get("code_names") or {}
     index = _name_index(list(cn.get("checks") or []) + list(cn.get("states") or []))
     quoted = bool(cn.get("quoted_tests"))
-    changed = list(lines)
-    blocks = _blocks(lines, footer)
-    for kind, parts, _ in blocks:
-        if kind in ("para", "list") and _fixable(lines, kind, parts, exempt):
+    spaced, origin, ends = _gapped(lines, crs, exempt)
+    new = list(spaced)
+    for kind, parts, _ in _blocks(spaced, footer):
+        if kind in ("para", "list") and _fixable(spaced, kind, parts, exempt):
             joined = "\n".join(content for _, content, _ in parts)
             out = _unwrap(joined)
             if quoted:
@@ -1492,26 +1546,13 @@ def fix_text(text, profile=None, exempt=frozenset()):
             if out == joined or len(pieces) != len(parts):
                 continue
             for (no, content, col), piece in zip(parts, pieces):
-                src = lines[no - 1]
+                src = spaced[no - 1]
                 edited = src[:col] + piece + src[col + len(content):]
                 if piece != content and _same_structure(src, edited):
-                    changed[no - 1] = edited
-    gaps = _details_gaps(lines, list(_outside_code(lines)))
-    before = {no for no, side in gaps if side == "before" and _gap_line(lines[no - 1], exempt, False)}
-    after = {no for no, side in gaps if side == "after" and _gap_line(lines[no - 1], exempt, True)}
-    new, ends, tags = [], [], []
-    for i, line in enumerate(changed):
-        if (i + 1) in before or i in after:
-            new.append("")
-            ends.append(crs[i - 1])
-            tags.append(("+", None))
-        new.append(line)
-        ends.append(crs[i])
-        tags.append(("=" if line == lines[i] else "~", i))
-    if new != lines:
-        shape = lambda b: [(kind, level, len(parts)) for kind, parts, level in b]
-        if shape(_blocks(new, footer)) != shape(blocks):
-            raise Refused(["the changes would alter how the draft is built, so furbish changed nothing"])
+                    new[no - 1] = edited
+    tags = [("+", None) if i is None else ("=" if new[k] == lines[i] else "~", i) for k, i in enumerate(origin)]
+    if new != spaced and _shape(new, footer) != _shape(spaced, footer):
+        raise Refused(["the changes would alter how the draft is built, so furbish changed nothing"])
     joined = "\n".join(l + "\r" if c else l for l, c in zip(new, ends))
     return Fixed(joined, lines, new, tags)
 
