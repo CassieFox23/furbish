@@ -852,7 +852,7 @@ class TestCheckFooter(unittest.TestCase):
 
 
 MADE_UP_LIST = "phrase\tswap\tkind\ncompletely full\tfull\tredundant\nclose scrutiny\tscrutiny\tredundant\nabsolute guarantee\tguarantee\tredundant\nsoftware program\tsoftware\tredundant\npdf format\tPDF\tredundant\nin order to\tto\twordy\nunsolved mystery\tmystery\tredundant\nfinal outcome\toutcome\tredundant\ndid not succeed\tfailed\twordy\nat this point in time\tnow\twordy\npoint in\t\tjargon\ndelve\t\tai\nso\t\topener-so\nthere is\t\topener-there\nit's important to note\t\thedge\nself-confessed\tconfessed\tredundant\n"
-ALL_LISTS = ["ai-tells", "proselint", "write-good"]
+ALL_LISTS = ["ai-tells", "diction", "proselint", "write-good"]
 
 
 class WordsCase(unittest.TestCase):
@@ -985,6 +985,13 @@ class TestWordListData(unittest.TestCase):
                 self.assertEqual(swap, swap.strip(), (name, row))
                 phrases.add(phrase)
 
+    def test_the_diction_list_flags_its_cliches(self):
+        says = lambda d, words: [p.message for p in furbish.check(d, prof(words=words)) if p.rule == "words"]
+        self.assertEqual(says("That bug is par for the course.\n", ["diction"]), ['"par for the course" is a cliché; say what you mean in plain words (from the diction word list)'])
+        self.assertEqual(says("You are hereby advised that it broke.\n", ["diction"]), ['"You are hereby advised" is a cliché; say what you mean in plain words (from the diction word list)'])
+        self.assertEqual(says("We regret to inform you it broke.\n", ["proselint"]), ['"We regret to inform you" is a cliché; say what you mean in plain words (from the proselint word list)'])
+        self.assertEqual(len(furbish._load_list("diction")), 26)
+
     def test_write_good_flags_its_weasel_words_but_not_too_many_or_too_few(self):
         says = lambda d: [p.message for p in furbish.check(d, prof(words=["write-good"])) if p.rule == "words"]
         self.assertEqual(says("The build is very fast.\n"), ['"very" is vague; say exactly what you mean, or cut it (from the write-good word list)'])
@@ -1022,7 +1029,7 @@ class TestWordsConfig(ConfigCase):
     def test_a_profile_names_known_lists_only(self):
         p = self.load('[repo."a/b"]\nwords = ["proselint"]\nword_swaps = true\n')["repo"]["a/b"]
         self.assertEqual((p["words"], p["word_swaps"]), (["proselint"], True))
-        self.bad('[repo."a/b"]\nwords = ["nope"]\n', "words in a/b names nope, which is not one of furbish's word lists; they are: ai-tells, proselint, write-good")
+        self.bad('[repo."a/b"]\nwords = ["nope"]\n', "words in a/b names nope, which is not one of furbish's word lists; they are: ai-tells, diction, proselint, write-good")
         self.bad('[repo."a/b"]\nword_swaps = "yes"\n', "word_swaps")
 
     def test_a_kind_can_turn_the_lists_off(self):

@@ -13,7 +13,7 @@ Taken from proselint/checks/: redundancy/garner, redundancy/after-the-deadline, 
 
 proselint credits its cliches/write-good list to write-good, https://github.com/btford/write-good, MIT, Copyright (c) 2014-2019 Brian Ford; that licence is in proselint/LICENSE-write-good.
 
-proselint's cliches/diction list comes from GNU diction, whose licence was not read, so it is not included.
+proselint's cliches/diction list, credited to GNU diction, has 27 phrases. The 26 that GNU diction's own English list holds are taken from GNU diction itself, in diction/words.tsv below. The other one, "we regret to inform you", is not in GNU diction 1.11, so it is taken from proselint's file into proselint/words.tsv as a cliché.
 
 
 write-good/words.tsv
@@ -29,6 +29,15 @@ Copyright (c) 2014-2019 Brian Ford
 The weasel words are weasel-words', the list write-good uses: https://github.com/btford/weasel-words, version 0.1.2, commit 642f5981e3fdfbe82ca2b100474aade3fd9eb943 (0.1.2 plus the licence file added after it). All 27 are taken. As in weasel-words, "many" and "few" are not flagged straight after "too": the rows "too many" and "too few" have the kind none, which flags nothing and keeps the words inside it from being flagged.
 MIT, in write-good/LICENSE-weasel-words.
 Copyright (c) 2014 Brian Ford
+
+
+diction/words.tsv
+
+From GNU diction 1.11, https://www.gnu.org/software/diction/, the release tarball diction-1.11.tar.gz (sha256 35c2f1bf8ddf0d5fa9f737ffc8e55230736e5d850ff40b57fdf5ef1d7aa024f6).
+GPL-3.0-or-later: its source files and README grant version 3 "or (at your option) any later version". The licence text is its COPYING file, here as diction/LICENSE. The English phrase file, en, has no header of its own and comes under the package's licence.
+Copyright 1997-2007 Michael Haardt
+
+Taken from the file en: the 26 phrases of proselint's cliches/diction list that it holds, all marked there as clichés to avoid, word for word, with "you are hereby advised" as en has it (proselint adds "that"). "we are pleased to advice" is spelled as in GNU diction, so it only flags that misspelling.
 
 
 ai-tells/words.tsv
