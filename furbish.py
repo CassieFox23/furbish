@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import argparse, bisect, json, os, re, shutil, subprocess, sys, tempfile, tomllib
+import argparse, bisect, json, os, re, shutil, signal, subprocess, sys, tempfile, threading, time, tomllib
 from collections import namedtuple
 
 __version__ = "0.1.0.dev0"
@@ -1007,6 +1007,7 @@ def check(text, profile=None, post=False, exempt=frozenset()):
 
 
 EXTERNAL_TIMEOUT = 60
+EXTERNAL_MAX_OUTPUT = 64 * 1024 * 1024
 
 
 class ExternalError(ConfigError):
@@ -1087,21 +1088,66 @@ def _why(stdout, stderr):
     return (_first_line(stdout) or _first_line(stderr) or "no output")[:200]
 
 
-def _run_entry(entry, draft_path, timeout):
+def _size(cap):
+    return f"{cap // (1024 * 1024)} MB" if cap >= 1024 * 1024 else f"{cap} bytes"
+
+
+def _drain(stream, cap, out, over):
+    total = 0
+    while True:
+        chunk = stream.read(65536)
+        if not chunk:
+            return
+        if total < cap:
+            out.append(chunk[:cap - total])
+        total += len(chunk)
+        if total > cap:
+            over.set()
+            return
+
+
+def _stop(proc):
+    if hasattr(os, "killpg"):
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    else:
+        proc.kill()
+    proc.wait()
+
+
+def _run_entry(entry, draft_path, timeout, cap=EXTERNAL_MAX_OUTPUT):
     name = entry["name"]
     mode = entry["mode"]
     command = entry["command"]
     argv = list(command) + [draft_path]
     try:
-        result = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
     except (OSError, ValueError) as e:
         reason = getattr(e, "strerror", None) or e
         raise ExternalError(f"{name}: could not run {command[0]}: {reason}")
-    except subprocess.TimeoutExpired:
+    outs, errs = [], []
+    over = threading.Event()
+    readers = [threading.Thread(target=_drain, args=(s, cap, o, over), daemon=True) for s, o in ((proc.stdout, outs), (proc.stderr, errs))]
+    for r in readers:
+        r.start()
+    deadline = time.monotonic() + timeout
+    while proc.poll() is None and not over.is_set() and time.monotonic() < deadline:
+        over.wait(0.05)
+    late = proc.poll() is None and not over.is_set()
+    _stop(proc)
+    for r in readers:
+        r.join(max(1.0, deadline - time.monotonic()))
+    if over.is_set():
+        raise ExternalError(f"{name}: printed more than {_size(cap)} and was stopped")
+    if late or any(r.is_alive() for r in readers):
         raise ExternalError(f"{name}: took longer than {timeout:g} seconds and was stopped")
-    stdout = result.stdout.decode("utf-8", errors="replace")
-    stderr = result.stderr.decode("utf-8", errors="replace")
-    rc = result.returncode
+    proc.stdout.close()
+    proc.stderr.close()
+    stdout = b"".join(outs).decode("utf-8", errors="replace")
+    stderr = b"".join(errs).decode("utf-8", errors="replace")
+    rc = proc.returncode
     if rc not in (0, 1):
         raise ExternalError(f"{name}: stopped with status {rc}: {_why(stdout, stderr)}")
     if mode == "lines":
@@ -1119,10 +1165,10 @@ def _run_entry(entry, draft_path, timeout):
         return _parse_json_alerts(name, data)
 
 
-def run_external(entries, draft_path, timeout=EXTERNAL_TIMEOUT):
+def run_external(entries, draft_path, timeout=EXTERNAL_TIMEOUT, cap=EXTERNAL_MAX_OUTPUT):
     problems = []
     for entry in entries:
-        problems.extend(_run_entry(entry, draft_path, timeout))
+        problems.extend(_run_entry(entry, draft_path, timeout, cap))
     return problems
 
 

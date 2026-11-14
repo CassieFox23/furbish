@@ -61,7 +61,7 @@ What each part is for:
 
 How an outside checker is run:
 
-- furbish runs the `command` with the draft's full path added as the last argument. There is no shell, the checker gets no input to wait for, and it is stopped after 60 seconds.
+- furbish runs the `command` with the draft's full path added as the last argument. There is no shell, the checker gets no input to wait for, and it is stopped after 60 seconds, or once it prints more than 64 MB, together with anything it started.
 - Exit status 0 and 1 are normal, since linters exit 1 when they find problems. Any other status, a program that can't be started, a timeout or output furbish can't read stops the whole run with a message naming the checker, and `furbish check` exits 2.
 - In `lines` mode, every output line that matches `fail` is a problem. A line that starts with the draft's path and a line number, like `/path/draft.md:7:12: text`, is reported at that line; any other matching line is reported without one.
 - In `json` mode furbish reads what Vale prints with `--output=JSON`: an object of file paths, each holding a list of alerts with `Line`, `Check` and `Message`. Every alert counts as a problem, so set the level in the command itself, for example Vale's `--minAlertLevel=warning`.

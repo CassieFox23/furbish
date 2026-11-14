@@ -1135,6 +1135,55 @@ class TestRunExternal(ExternalCase):
     def test_no_entries_means_nothing_runs(self):
         self.assertEqual(furbish.run_external([], self.draft()), [])
 
+    def gone(self, pidfile):
+        with open(pidfile) as f:
+            pid = int(f.read())
+        for _ in range(100):
+            try:
+                with open(f"/proc/{pid}/stat") as f:
+                    if f.read().rsplit(")", 1)[1].split()[0] == "Z":
+                        return True
+            except FileNotFoundError:
+                return True
+            time.sleep(0.05)
+        return False
+
+    def child(self, then):
+        pidfile = os.path.join(self.tmp, "child.pid")
+        return pidfile, f"import subprocess, sys, time\nc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)'])\nopen({pidfile!r}, 'w').write(str(c.pid))\n{then}\n"
+
+    @unittest.skipUnless(os.path.isdir("/proc") and hasattr(os, "killpg"), "needs /proc and process groups")
+    def test_a_timeout_stops_what_the_checker_started(self):
+        pidfile, code = self.child("time.sleep(300)")
+        with self.assertRaises(furbish.ExternalError) as cm:
+            furbish.run_external([self.entry(code, fail="x")], self.draft(), timeout=1)
+        self.assertIn("took longer than 1 seconds", str(cm.exception))
+        self.assertTrue(self.gone(pidfile))
+
+    @unittest.skipUnless(os.path.isdir("/proc") and hasattr(os, "killpg"), "needs /proc and process groups")
+    def test_a_program_left_running_after_the_checker_ends_is_stopped_and_does_not_hold_it_up(self):
+        pidfile, code = self.child("print('FAIL here')")
+        t = time.perf_counter()
+        out = furbish.run_external([self.entry(code, fail="FAIL")], self.draft(), timeout=30)
+        self.assertEqual(len(out), 1)
+        self.assertLess(time.perf_counter() - t, 10)
+        self.assertTrue(self.gone(pidfile))
+
+    def test_endless_output_is_cut_off(self):
+        e = self.entry("import sys\nwhile True:\n    sys.stdout.write('x' * 65536)\n", fail="x")
+        t = time.perf_counter()
+        with self.assertRaises(furbish.ExternalError) as cm:
+            furbish.run_external([e], self.draft(), timeout=30, cap=1000000)
+        self.assertLess(time.perf_counter() - t, 10)
+        self.assertIn("ex: printed more than 1000000 bytes and was stopped", str(cm.exception))
+        self.assertEqual(furbish._size(furbish.EXTERNAL_MAX_OUTPUT), "64 MB")
+
+    def test_a_lot_on_stderr_does_not_hang_a_checker_that_passes(self):
+        e = self.entry("import sys\nsys.stderr.write('e' * 2000000)\nsys.stderr.flush()\nprint('FAIL here')\n", fail="FAIL")
+        t = time.perf_counter()
+        self.assertEqual(len(furbish.run_external([e], self.draft(), timeout=30)), 1)
+        self.assertLess(time.perf_counter() - t, 10)
+
 
 class TestCheckCliWithCheckers(ExternalCase):
     def env(self, **extra):
