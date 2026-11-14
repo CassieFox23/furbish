@@ -716,10 +716,16 @@ _SPDX_PATTERNS = (
     re.compile(r"\bApache(?: License)?,? (?:v|version )?2(?:\.0)?\b"),
     re.compile(r"\bBSD [23](?:-| )[Cc]lause\b"),
 )
-_SHA_RE = re.compile(r"[0-9a-f]{7,40}")
+_SHA_RE = re.compile(r"[0-9a-fA-F]{7,40}")
 _LABEL_RE = re.compile(r"^(\*\*|__)[^*_]{1,40}?(:(\*\*|__)|(\*\*|__):)\s*")
 _BARE_URL_RE = re.compile(r"https?://\S+")
 _CHECKBOX_RE = re.compile(r"(?:[-*+]|\d+[.)])\s+\[[ xX]\]")
+
+
+def _sha_case(content):
+    if _SHA_RE.fullmatch(content) and any(c.isdigit() for c in content) and any(c.isalpha() for c in content):
+        return "lower" if content.islower() else "upper"
+    return None
 
 
 def _mask_code(line):
@@ -875,8 +881,11 @@ def _rule_code_spans(outside):
             content = s[k:len(s) - k].strip()
             if "http://" in content or "https://" in content:
                 out.append(Problem(no, "", "url-in-code", "a URL belongs outside backticks so it becomes a link"))
-            if _SHA_RE.fullmatch(content) and any(c.isdigit() for c in content) and any(c.isalpha() for c in content):
+            case = _sha_case(content)
+            if case == "lower":
                 out.append(Problem(no, "", "sha", f"{content} is a commit sha in backticks; write it bare, because GitHub only links a bare sha"))
+            elif case:
+                out.append(Problem(no, "", "sha", f"{content} looks like a commit sha in backticks; if it is one, write it bare and in lower case, because GitHub only links a bare lower-case sha"))
     return out
 
 
@@ -1304,9 +1313,7 @@ def _unwrap(text):
         span = text[s:e]
         k = len(span) - len(span.lstrip("`"))
         content = span[k:len(span) - k].strip()
-        sha_ok = (_SHA_RE.fullmatch(content) and any(c.isdigit() for c in content)
-                  and any(c.isalpha() for c in content))
-        if sha_ok or re.fullmatch(r"https?://\S+", content):
+        if _sha_case(content) == "lower" or re.fullmatch(r"https?://\S+", content):
             found.append((s, e, content))
     out, pos = [], 0
     for s, e, content in found:

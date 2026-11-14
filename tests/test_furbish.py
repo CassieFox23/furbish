@@ -604,6 +604,14 @@ class TestCheckShaAndUrlInCode(unittest.TestCase):
         self.assertEqual(probs("Fixed in `c1217e711` today.\n"), [(1, "sha")])
         self.assertEqual(probs("Fixed in `c1217e711c9a3b2d4e5f60718293a4b5c6d7e8f9` today.\n"), [(1, "sha")])
 
+    def test_an_upper_case_sha_in_backticks_is_flagged_with_lower_case_advice(self):
+        for d in ["Fixed in `C1217E711` today.\n", "Fixed in `C1217e711` today.\n"]:
+            (p,) = furbish.check(d)
+            self.assertEqual((p.line, p.rule), (1, "sha"), d)
+            self.assertIn("lower case", p.message)
+        (p,) = furbish.check("Fixed in `c1217e711` today.\n")
+        self.assertNotIn("lower case", p.message)
+
     def test_things_that_are_not_shas_pass(self):
         for d in ["Fixed in c1217e711 today.\n", "Word `deadbeef` here.\n", "Count `1234567` here.\n", "Short `abc123` here.\n", "Mixed `c1217e711 and more` here.\n", "```\nfixed `c1217e711`\n```\n"]:
             self.assertEqual(probs(d), [], d)
@@ -1891,6 +1899,10 @@ class TestFixText(unittest.TestCase):
 
     def test_other_code_spans_are_left_alone(self):
         for t in ("The `deadbeef` and `12345678` and `abcdef` words.", "Use `ABCDEF1234` here.", "Run `git show abc1234` now.", "Run `curl https://example.com` now.", "A `abc1234 def5678` pair.", "The `--flag` option."):
+            self.assertEqual(fx(t + "\n"), t + "\n", t)
+
+    def test_an_upper_case_sha_keeps_its_backticks_because_github_would_not_link_it_bare(self):
+        for t in ("Fixed in `C1217E711` today.", "Fixed in `C1217e711` today."):
             self.assertEqual(fx(t + "\n"), t + "\n", t)
 
     def test_a_lone_url_loses_its_backticks(self):
