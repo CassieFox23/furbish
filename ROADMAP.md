@@ -30,10 +30,15 @@ What is done, what is known to be missing, what is planned and what is not comin
 Things furbish does not do yet, or does in a way a person might not expect. None is a crash or a way to lose text.
 
 - **`<pre>` in a list item or a quote:** the details rule knows a `<pre>`, `<script>`, `<style>` or `<textarea>` block only when it starts at the left margin. Inside a list item or a quote, `check` still asks for blank lines around a `<details>` summary in one, and in a list item `fix` adds them, where GitHub would show them as empty lines
+- **The licence example for GPL names:** `check` gives `GPL-2.0-only` as the example for every informal GPL name, `GPLv3` included, where it should fit the version
+- **A blank line before `</details>` that GitHub may not need:** `check` asks for one after a line that already ends its own block, such as `</pre>` or a line of bold text, and `fix` adds it. Another Markdown renderer shows these the same without it; GitHub's own renderer was not checked
+- **Characters or bytes:** the length rule counts characters, the unit GitHub's error message names. Whether GitHub really counts bytes is not checked, since testing it means posting. If it does, a draft full of accents or emoji could pass `check` and still be refused
 - **Speed:** `set` reads the draft twice, once to find the sentence and once more to make sure the rest still reads the same, and `split` grades both halves of up to six cuts for each hard sentence. Timed with hyperfine on a Ryzen 9 5900X, the whole command takes about 0.75 s for the worst hostile draft found for `set` (52,000 one-word lines) and 0.6 s for `split` (200 long sentences full of places to cut), against 0.17 s for a realistic 262 KB draft. GitHub's CI runners are about twice as slow. A profile found no one slow spot: the time is spread over the shared reader and grader, and the second read is the guard
 
 ## Later
 
+- **write-good's weasel words** (26 of them), once the licence of the package they live in, weasel-words, is read: at the version write-good uses it has no licence file, only "MIT" in its package details
+- **GNU diction's clichés,** the 27 phrases proselint borrows from it, once GNU diction's own licence is read
 - **A tiny local editing model, measured and not wired in.** On 14 Nov 2026 CoEdIT-small and CoEdIT-base (jbochi's Apache-2.0 fine-tunes of Flan-T5), converted with llama.cpp and run on the CPU, were asked to make 50 made-up hard PR sentences easier to read (grade 10 to 25, mean 17.8, each holding code, a number, a version, an issue ref, a commit sha, a path or a URL). They kept every such item in 86 to 88% of sentences, but dropped the backticks from every code span and cut the mean grade by only 0.5 to 1.2. Between 9 and 20 of the 50 came back unchanged, only 2 or 3 came out under grade 10, and at most 1 of those kept everything. A lost item went with a dropped clause, and some rewrites changed the meaning or repeated a clause. About 0.2 s a sentence for small and 0.5 s for base. Not good enough to wire in; `split`, `set` and a person stay the way to cut a hard sentence.
 
 ## Not planned
