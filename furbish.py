@@ -121,6 +121,19 @@ class _IndentedCode:
         return False
 
 
+def _raw_part(blocks, cur, no, line, base, footer):
+    stripped = line.strip()
+    if not stripped or _HTML_ONLY.fullmatch(stripped) or (footer and re.search(footer, line)):
+        return None
+    part = (no, stripped, base + len(line.rstrip()) - len(stripped))
+    if cur and cur[0] == "html":
+        cur[1].append(part)
+        return cur
+    cur = ["html", [part], 0]
+    blocks.append(cur)
+    return cur
+
+
 def _blocks(lines, footer, raw=True, spans=None):
     blocks = []
     cur = None
@@ -131,12 +144,18 @@ def _blocks(lines, footer, raw=True, spans=None):
     html = 0
     icode = _IndentedCode()
     for no, line in enumerate(lines, 1):
-        if html == 1 and spans is not None:
-            spans.add(no)
         base = 0
         if no == 1 and line.startswith("\ufeff"):
             line = line[1:]
             base = 1
+        if html == 1:
+            if spans is not None:
+                spans.add(no)
+            if _HTML_RAW_END.search(line):
+                html = 0
+            cur = _raw_part(blocks, cur, no, line, base, footer)
+            continue
+        opened = comment
         if fence:
             if _fence_close(line, *fence):
                 fence = None
@@ -166,6 +185,12 @@ def _blocks(lines, footer, raw=True, spans=None):
         if icode.step(line):
             cur = None
             continue
+        if raw and not html and not opened and _HTML_RAW.match(line):
+            if spans is not None:
+                spans.add(no)
+            html = 0 if _HTML_RAW_END.search(line) else 1
+            cur = _raw_part(blocks, cur, no, line, base, footer)
+            continue
         whole = line
         line, comment = _comments(line)
         shift = base if line == whole else None
@@ -181,16 +206,11 @@ def _blocks(lines, footer, raw=True, spans=None):
         if not stripped:
             cur = None
             table = False
-            if html != 1 and not lines[no - 1].removeprefix("\ufeff").strip():
+            if not lines[no - 1].removeprefix("\ufeff").strip():
                 html = 0
             continue
-        if raw and not html and stripped[0] == "<":
-            if _HTML_RAW.match(line):
-                html = 1
-                if spans is not None:
-                    spans.add(no)
-            elif _HTML_BLOCK.match(line) or (cur is None and _HTML_TAG_LINE.fullmatch(line)):
-                html = 6
+        if raw and not html and stripped[0] == "<" and (_HTML_BLOCK.match(line) or (cur is None and _HTML_TAG_LINE.fullmatch(line))):
+            html = 6
         if html:
             if _HTML_ONLY.fullmatch(stripped):
                 cur = None
@@ -199,8 +219,6 @@ def _blocks(lines, footer, raw=True, spans=None):
             else:
                 cur = ["html", [(no, stripped, None if shift is None else shift + end_col - len(stripped))], 0]
                 blocks.append(cur)
-            if html == 1 and _HTML_RAW_END.search(line):
-                html = 0
             continue
         if "|" in stripped and _TABLE_DELIM.fullmatch(stripped):
             if cur is not None and cur[0] == "para" and "|" in cur[1][-1][1]:
@@ -773,11 +791,13 @@ def _mask_code(line):
     return _edit(line, _code_spans(line), _hide) if "`" in line else line
 
 
-def _outside_code(lines):
+def _outside_code(lines, skip=frozenset()):
     fence = None
     comment = False
     icode = _IndentedCode()
     for no, line in enumerate(lines, 1):
+        if no in skip:
+            continue
         if no == 1:
             line = line.removeprefix("\ufeff")
         if fence:
@@ -880,7 +900,7 @@ def _rule_length(text):
     if len(text) <= GITHUB_MAX_BODY:
         return []
     line = text.count("\n", 0, GITHUB_MAX_BODY) + 1
-    return [Problem(line, "", "length", f"the draft is {len(text):,} characters long and goes over GitHub's limit of {GITHUB_MAX_BODY:,} for one post or comment on this line; cut it down, or move the rest into a second comment")]
+    return [Problem(line, "", "length", f"the draft is {len(text):,} characters long, {len(text) - GITHUB_MAX_BODY:,} over GitHub's limit of {GITHUB_MAX_BODY:,} for one post or comment, and it goes over on this line; cut it down, or move the rest into a second comment")]
 
 
 def _rule_footer(lines, footer):
@@ -979,9 +999,11 @@ def _raw_html_lines(lines, footer):
     return spans
 
 
-def _details_gaps(lines, outside, footer):
+def _details_gaps(lines, footer):
+    if not any("</" in line for line in lines):
+        return []
     out = []
-    for no, line in outside:
+    for no, line in _outside_code(lines, _raw_html_lines(lines, footer)):
         if "</" not in line:
             continue
         low = _mask_code(line).lower()
@@ -990,13 +1012,20 @@ def _details_gaps(lines, outside, footer):
         if "</details>" in low and no > 1 and lines[no - 2].strip():
             out.append((no, "before"))
     if out:
-        raw = _raw_html_lines(lines, footer)
-        out = [g for g in out if g[0] not in raw]
+        at = {no - 1 if side == "before" else no for no, side in out}
+        spaced, blank = [], {}
+        for i, line in enumerate(lines):
+            if i in at:
+                spaced.append("")
+                blank[i] = len(spaced)
+            spaced.append(line)
+        raw = _raw_html_lines(spaced, footer)
+        out = [(no, side) for no, side in out if blank[no - 1 if side == "before" else no] not in raw]
     return out
 
 
-def _rule_details(lines, outside, footer):
-    return [Problem(no, "", "details-blank", f"a blank line is needed {side} {'</summary>' if side == 'after' else '</details>'} or the text inside will not be formatted") for no, side in _details_gaps(lines, outside, footer)]
+def _rule_details(lines, footer):
+    return [Problem(no, "", "details-blank", f"a blank line is needed {side} {'</summary>' if side == 'after' else '</details>'} or the text inside will not be formatted") for no, side in _details_gaps(lines, footer)]
 
 
 def _cleaned(text):
@@ -1056,7 +1085,7 @@ def check(text, profile=None, post=False, exempt=frozenset()):
     problems += _rule_code_spans(outside)
     problems += _rule_mentions(outside)
     problems += _rule_spdx(outside)
-    problems += _rule_details(lines, outside, footer)
+    problems += _rule_details(lines, footer)
     if post:
         problems += _rule_grade(lines, located, exempt, _grade_skip(p))
     problems.sort(key=lambda q: q.line)
@@ -1549,7 +1578,7 @@ def _shape(lines, footer, raw=True):
 
 
 def _gapped(lines, crs, exempt, footer=None):
-    gaps = _details_gaps(lines, list(_outside_code(lines)), footer)
+    gaps = _details_gaps(lines, footer)
     before = {no for no, side in gaps if side == "before" and _gap_line(lines[no - 1], exempt, False)}
     after = {no for no, side in gaps if side == "after" and _gap_line(lines[no - 1], exempt, True)}
     spaced, origin, ends = [], [], []
@@ -1561,6 +1590,10 @@ def _gapped(lines, crs, exempt, footer=None):
         spaced.append(line)
         origin.append(i)
         ends.append(crs[i])
+    if len(spaced) > len(lines):
+        raw = _raw_html_lines(spaced, footer)
+        keep = [k for k in range(len(spaced)) if origin[k] is not None or k + 1 not in raw]
+        spaced, origin, ends = [spaced[k] for k in keep], [origin[k] for k in keep], [ends[k] for k in keep]
     return spaced, origin, ends
 
 

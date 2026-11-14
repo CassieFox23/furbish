@@ -535,8 +535,7 @@ class TestCheckLength(unittest.TestCase):
         d = self.draft(1)
         (p,) = furbish.check(d)
         self.assertEqual((p.line, p.sid, p.rule), (656, "", "length"))
-        self.assertIn("65,537 characters", p.message)
-        self.assertIn("65,536", p.message)
+        self.assertEqual(p.message, "the draft is 65,537 characters long, 1 over GitHub's limit of 65,536 for one post or comment, and it goes over on this line; cut it down, or move the rest into a second comment")
 
     def test_the_line_breaks_are_counted_as_written(self):
         d = ("x" * 98 + "\r\n") * 655 + "y" * 36
@@ -713,6 +712,31 @@ class TestCheckDetails(unittest.TestCase):
     def test_a_pre_inside_a_fold_still_needs_the_blank_line_after_the_summary(self):
         d = "<details>\n<summary>Log</summary>\nSome **bold** text.\n<pre>\nx\n</pre>\n\n</details>\n"
         self.assertEqual(probs(d), [(2, "details-blank")])
+
+    def test_a_raw_block_ends_on_its_closing_tag_whatever_else_the_line_holds(self):
+        fold = "<details>\n<summary>S</summary>\n**bold**\n</details>\n"
+        for before, p in (("<pre>\n$ run\n\n    result</pre>\n", None), ("<pre>\nx\n\n    </pre>\n", None), ("<pre>\n<!-- </pre> -->\n\n", None), ("<pre>\n<summary>x</summary></pre>\n", None), ("<pre>\n<summary>\nx\n</summary></pre>\n", None), ("<pre>\n```\n</pre>\n", None), ("<pre>\nx\n--footer </pre>\n\n", prof(footer=r"^--footer"))):
+            d = before + fold
+            n = before.count("\n")
+            self.assertEqual([x for x in probs(d, p) if x[1] == "details-blank"], [(n + 2, "details-blank"), (n + 4, "details-blank")], before)
+            self.assertEqual(fx(d, p), before + "<details>\n<summary>S</summary>\n\n**bold**\n\n</details>\n", before)
+
+    def test_a_raw_opener_after_a_comment_or_on_a_summary_line(self):
+        d = "<!-- c --><pre>\n<details>\n<summary>S</summary>\n**bold**\n</details>\n"
+        self.assertEqual(probs(d), [(3, "details-blank"), (5, "details-blank")])
+        d = "<pre><summary>x</summary>\nbody\n</pre>\n"
+        self.assertEqual(probs(d), [])
+        self.assertEqual(fx(d), d)
+
+    def test_a_blank_line_that_would_land_inside_a_raw_block_is_not_asked_for(self):
+        d = "<details>\n<summary>A</summary>\n<pre>\n<details>\n<summary>B</summary>\ntext\n</details>\n</pre>\n"
+        self.assertEqual(probs(d), [(2, "details-blank")])
+        once = fx(d)
+        self.assertEqual(once, "<details>\n<summary>A</summary>\n\n<pre>\n<details>\n<summary>B</summary>\ntext\n</details>\n</pre>\n")
+        self.assertEqual(probs(once), [])
+        d = "<details>\n<summary>S</summary>\n<pre>\nlog\n</details>\n"
+        self.assertEqual(probs(d), [(2, "details-blank")])
+        self.assertEqual(fx(d), "<details>\n<summary>S</summary>\n\n<pre>\nlog\n</details>\n")
 
     def test_a_pre_in_code_a_comment_or_indented_code_starts_nothing(self):
         fold = "<details>\n<summary>Log</summary>\nBody.\n</details>\n"

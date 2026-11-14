@@ -27,6 +27,7 @@ What is done, what is known to be missing, what is planned and what is not comin
 
 Things furbish does not do yet, or does in a way a person might not expect. None is a crash or a way to lose text.
 
+- **`<pre>` in a list item or a quote:** the details rule knows a `<pre>`, `<script>`, `<style>` or `<textarea>` block only when it starts at the left margin. Inside a list item or a quote, `check` still asks for blank lines around a `<details>` summary in one, and in a list item `fix` adds them, where GitHub would show them as empty lines
 - **Speed:** `set` reads the draft twice, once to find the sentence and once more to make sure the rest still reads the same, and `split` grades both halves of up to six cuts for each hard sentence. Timed with hyperfine on a Ryzen 9 5900X, the whole command takes about 0.75 s for the worst hostile draft found for `set` (52,000 one-word lines) and 0.6 s for `split` (200 long sentences full of places to cut), against 0.17 s for a realistic 262 KB draft. GitHub's CI runners are about twice as slow. A profile found no one slow spot: the time is spread over the shared reader and grader, and the second read is the guard
 
 ## Later
