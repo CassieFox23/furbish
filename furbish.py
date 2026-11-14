@@ -912,10 +912,13 @@ GITHUB_MAX_BODY = 65536
 
 
 def _rule_length(text):
-    if len(text) <= GITHUB_MAX_BODY:
+    if len(text) * 4 <= GITHUB_MAX_BODY:
         return []
-    line = text.count("\n", 0, GITHUB_MAX_BODY) + 1
-    return [Problem(line, "", "length", f"the draft is {len(text):,} characters long, {len(text) - GITHUB_MAX_BODY:,} over GitHub's limit of {GITHUB_MAX_BODY:,} for one post or comment, and it goes over on this line; cut it down, or move the rest into a second comment")]
+    data = text.encode("utf-8", "surrogatepass")
+    if len(data) <= GITHUB_MAX_BODY:
+        return []
+    line = data.count(b"\n", 0, GITHUB_MAX_BODY) + 1
+    return [Problem(line, "", "length", f"the draft is {len(data):,} bytes long (a plain letter is 1 byte, an accented letter 2, an emoji 4), {len(data) - GITHUB_MAX_BODY:,} over GitHub's limit of {GITHUB_MAX_BODY:,} for one post or comment, and it goes over on this line; cut it down, or move the rest into a second comment")]
 
 
 def _rule_footer(lines, footer):

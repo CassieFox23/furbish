@@ -20,7 +20,7 @@ A typical run: `check`, then `fix`, then `check --post` and `split` just before 
 
 With no config at all, `check` looks for:
 
-- a draft longer than GitHub allows (65,536 characters)
+- a draft longer than GitHub allows (65,536, counted in bytes to be safe)
 - @ mentions, which ping people
 - a commit id (sha) or a web address inside backticks, where GitHub won't turn it into a link
 - a collapsed `<details>` section missing the blank line GitHub needs after its summary

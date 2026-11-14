@@ -526,16 +526,34 @@ class TestCheckLength(unittest.TestCase):
     def draft(self, extra, nl="\n"):
         return ("x" * 99 + nl) * 655 + "y" * 36 + "z" * extra
 
-    def test_a_draft_of_exactly_65536_characters_passes(self):
+    def test_a_draft_of_exactly_65536_bytes_passes(self):
         d = self.draft(0)
         self.assertEqual(len(d), 65536)
         self.assertEqual(furbish.check(d), [])
 
-    def test_one_character_more_fails_on_the_line_where_it_goes_over(self):
+    def test_one_byte_more_fails_on_the_line_where_it_goes_over(self):
         d = self.draft(1)
         (p,) = furbish.check(d)
         self.assertEqual((p.line, p.sid, p.rule), (656, "", "length"))
-        self.assertEqual(p.message, "the draft is 65,537 characters long, 1 over GitHub's limit of 65,536 for one post or comment, and it goes over on this line; cut it down, or move the rest into a second comment")
+        self.assertEqual(p.message, "the draft is 65,537 bytes long (a plain letter is 1 byte, an accented letter 2, an emoji 4), 1 over GitHub's limit of 65,536 for one post or comment, and it goes over on this line; cut it down, or move the rest into a second comment")
+
+    def test_accents_and_emoji_count_in_utf8_bytes(self):
+        self.assertEqual(furbish.check("\U0001f98a" * 16384), [])
+        (p,) = furbish.check("\U0001f98a" * 16385)
+        self.assertEqual((p.line, p.rule), (1, "length"))
+        self.assertTrue(p.message.startswith("the draft is 65,540 bytes long"), p.message)
+        self.assertEqual(furbish.check("\u00e9" * 32768), [])
+        (p,) = furbish.check("\u00e9" * 32769)
+        self.assertTrue(p.message.startswith("the draft is 65,538 bytes long"), p.message)
+        d = ("\u00e9" * 49 + "x\n") * 655 + "y" * 36
+        self.assertEqual(len(d.encode()), 65536)
+        self.assertLess(len(d), 34000)
+        self.assertEqual(furbish.check(d), [])
+        (p,) = furbish.check(d + "\u00e9")
+        self.assertEqual((p.line, p.rule), (656, "length"))
+        (p,) = furbish.check(("\u00e9" * 50 + "\n") * 700)
+        self.assertEqual((p.line, p.rule), (649, "length"))
+        self.assertEqual(furbish.check("\ud83e" * 10), [])
 
     def test_the_line_breaks_are_counted_as_written(self):
         d = ("x" * 98 + "\r\n") * 655 + "y" * 36
@@ -553,7 +571,7 @@ class TestCheckLength(unittest.TestCase):
                 f.write(self.draft(1))
             r = subprocess.run([sys.executable, "-I", SCRIPT, "check", path], capture_output=True, text=True, env={"FURBISH_CONFIG": "", "XDG_CONFIG_HOME": d, "HOME": d})
             self.assertEqual(r.returncode, 1)
-            self.assertIn(":656: the draft is 65,537 characters long", r.stdout)
+            self.assertIn(":656: the draft is 65,537 bytes long", r.stdout)
 
 
 class TestCheckGrade(unittest.TestCase):
