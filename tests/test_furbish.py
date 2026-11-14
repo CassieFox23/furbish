@@ -835,6 +835,19 @@ class TestCheckStaysFast(unittest.TestCase):
 
 
 class TestCheckCli(ConfigCase):
+    def test_text_on_a_262_kb_draft_stays_fast(self):
+        with open(os.path.join(DRAFTS, "pr-body.md"), encoding="utf-8") as f:
+            body = f.read()
+        hard = HARD + " "
+        for d, cap in (((body * (262000 // len(body) + 1))[:262000], 1.0), ((hard * (262000 // len(hard) + 1))[:262000], 2.0)):
+            path = self.write(d, "big.md")
+            t = time.perf_counter()
+            r = subprocess.run([sys.executable, "-I", SCRIPT, "check", "--post", "--text", path], capture_output=True, text=True, env={"HOME": self.tmp, "PATH": "/usr/bin:/bin"})
+            took = time.perf_counter() - t
+            self.assertIn(r.returncode, (0, 1), r.stderr[-300:])
+            self.assertLess(took, cap, d[:14])
+        self.assertIn("    " + HARD, r.stdout)
+
     def env(self, **extra):
         e = {"HOME": self.tmp, "PATH": "/usr/bin:/bin"}
         e.update(extra)
