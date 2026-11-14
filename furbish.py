@@ -121,7 +121,7 @@ class _IndentedCode:
         return False
 
 
-def _blocks(lines, footer):
+def _blocks(lines, footer, raw=True):
     blocks = []
     cur = None
     fence = None
@@ -171,7 +171,7 @@ def _blocks(lines, footer):
         hid = _edit(line, _code_spans(line), _hide).lower()
         if "<summary" in hid:
             summary = "</summary>" not in hid
-            if not html and _HTML_BLOCK.match(line):
+            if raw and not html and _HTML_BLOCK.match(line):
                 html = 6
             cur = None
             continue
@@ -179,10 +179,10 @@ def _blocks(lines, footer):
         if not stripped:
             cur = None
             table = False
-            if html != 1 and not whole.strip():
+            if html != 1 and not lines[no - 1].removeprefix("\ufeff").strip():
                 html = 0
             continue
-        if not html and stripped[0] == "<":
+        if raw and not html and stripped[0] == "<":
             if _HTML_RAW.match(line):
                 html = 1
             elif _HTML_BLOCK.match(line) or (cur is None and _HTML_TAG_LINE.fullmatch(line)):
@@ -1129,7 +1129,7 @@ def _size(cap):
 def _drain(stream, cap, out, over):
     total = 0
     while True:
-        chunk = stream.read(65536)
+        chunk = stream.read1(65536)
         if not chunk:
             return
         if total < cap:
@@ -1151,6 +1151,10 @@ def _stop(proc):
     proc.wait()
 
 
+def _signalled(signum, frame):
+    raise SystemExit(128 + signum)
+
+
 def _run_entry(entry, draft_path, timeout, cap=EXTERNAL_MAX_OUTPUT):
     name = entry["name"]
     mode = entry["mode"]
@@ -1167,18 +1171,32 @@ def _run_entry(entry, draft_path, timeout, cap=EXTERNAL_MAX_OUTPUT):
     for r in readers:
         r.start()
     deadline = time.monotonic() + timeout
-    while proc.poll() is None and not over.is_set() and time.monotonic() < deadline:
-        over.wait(0.05)
+    held = {}
+    if threading.current_thread() is threading.main_thread():
+        for sig in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGHUP", None)):
+            if sig is not None:
+                held[sig] = signal.signal(sig, _signalled)
+    try:
+        while proc.poll() is None and not over.is_set() and time.monotonic() < deadline:
+            over.wait(0.05)
+    except BaseException:
+        _stop(proc)
+        raise
+    finally:
+        for sig, handler in held.items():
+            if handler is not None:
+                signal.signal(sig, handler)
     late = proc.poll() is None and not over.is_set()
     _stop(proc)
     for r in readers:
-        r.join(max(1.0, deadline - time.monotonic()))
+        r.join(0.1 if late or over.is_set() else 1.0)
     if over.is_set():
         raise ExternalError(f"{name}: printed more than {_size(cap)} and was stopped")
-    if late or any(r.is_alive() for r in readers):
+    if late:
         raise ExternalError(f"{name}: took longer than {timeout:g} seconds and was stopped")
-    proc.stdout.close()
-    proc.stderr.close()
+    if not any(r.is_alive() for r in readers):
+        proc.stdout.close()
+        proc.stderr.close()
     stdout = b"".join(outs).decode("utf-8", errors="replace")
     stderr = b"".join(errs).decode("utf-8", errors="replace")
     rc = proc.returncode
@@ -1503,8 +1521,8 @@ def _fixable(lines, kind, parts, exempt):
     return True
 
 
-def _shape(lines, footer):
-    return [("para" if kind == "html" else kind, level, len(parts)) for kind, parts, level in _blocks(lines, footer)]
+def _shape(lines, footer, raw=True):
+    return [("para" if kind == "html" else kind, level, len(parts)) for kind, parts, level in _blocks(lines, footer, raw)]
 
 
 def _gapped(lines, crs, exempt):
@@ -1551,7 +1569,7 @@ def fix_text(text, profile=None, exempt=frozenset()):
                 if piece != content and _same_structure(src, edited):
                     new[no - 1] = edited
     tags = [("+", None) if i is None else ("=" if new[k] == lines[i] else "~", i) for k, i in enumerate(origin)]
-    if new != spaced and _shape(new, footer) != _shape(spaced, footer):
+    if new != lines and (_shape(new, footer, False) != _shape(lines, footer, False) or _shape(new, footer) != _shape(spaced, footer)):
         raise Refused(["the changes would alter how the draft is built, so furbish changed nothing"])
     joined = "\n".join(l + "\r" if c else l for l, c in zip(new, ends))
     return Fixed(joined, lines, new, tags)

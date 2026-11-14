@@ -1,4 +1,4 @@
-import importlib.util, json, os, re, shlex, shutil, subprocess, sys, tempfile, time, unittest
+import importlib.util, json, os, re, shlex, shutil, signal, subprocess, sys, tempfile, time, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(HERE, "..", "furbish.py")
@@ -985,6 +985,19 @@ class ExternalCase(ConfigCase):
     def draft(self, text="Body.\n", name="draft.md"):
         return self.write(text, name)
 
+    def gone(self, pidfile):
+        with open(pidfile) as f:
+            pid = int(f.read())
+        for _ in range(100):
+            try:
+                with open(f"/proc/{pid}/stat") as f:
+                    if f.read().rsplit(")", 1)[1].split()[0] == "Z":
+                        return True
+            except FileNotFoundError:
+                return True
+            time.sleep(0.05)
+        return False
+
 
 class TestRunExternal(ExternalCase):
     def test_lines_mode_reports_the_matching_lines_with_their_line_numbers(self):
@@ -1135,19 +1148,6 @@ class TestRunExternal(ExternalCase):
     def test_no_entries_means_nothing_runs(self):
         self.assertEqual(furbish.run_external([], self.draft()), [])
 
-    def gone(self, pidfile):
-        with open(pidfile) as f:
-            pid = int(f.read())
-        for _ in range(100):
-            try:
-                with open(f"/proc/{pid}/stat") as f:
-                    if f.read().rsplit(")", 1)[1].split()[0] == "Z":
-                        return True
-            except FileNotFoundError:
-                return True
-            time.sleep(0.05)
-        return False
-
     def child(self, then):
         pidfile = os.path.join(self.tmp, "child.pid")
         return pidfile, f"import subprocess, sys, time\nc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)'])\nopen({pidfile!r}, 'w').write(str(c.pid))\n{then}\n"
@@ -1159,6 +1159,18 @@ class TestRunExternal(ExternalCase):
             furbish.run_external([self.entry(code, fail="x")], self.draft(), timeout=1)
         self.assertIn("took longer than 1 seconds", str(cm.exception))
         self.assertTrue(self.gone(pidfile))
+
+    @unittest.skipUnless(os.path.isdir("/proc") and hasattr(os, "killpg"), "needs /proc and process groups")
+    def test_a_helper_that_leaves_the_group_does_not_hold_up_a_checker_that_has_finished(self):
+        pidfile = os.path.join(self.tmp, "helper.pid")
+        code = f"import subprocess, sys\nc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'], start_new_session=True)\nopen({pidfile!r}, 'w').write(str(c.pid))\nprint('FAIL here')\n"
+        t = time.perf_counter()
+        out = furbish.run_external([self.entry(code, fail="FAIL")], self.draft(), timeout=20)
+        took = time.perf_counter() - t
+        with open(pidfile) as f:
+            os.kill(int(f.read()), signal.SIGKILL)
+        self.assertEqual(len(out), 1)
+        self.assertLess(took, 5)
 
     @unittest.skipUnless(os.path.isdir("/proc") and hasattr(os, "killpg"), "needs /proc and process groups")
     def test_a_program_left_running_after_the_checker_ends_is_stopped_and_does_not_hold_it_up(self):
@@ -1202,6 +1214,22 @@ class TestCheckCliWithCheckers(ExternalCase):
     def run_check(self, *args, cfg=None, cwd=None):
         extra = {"FURBISH_CONFIG": cfg} if cfg else {}
         return subprocess.run([sys.executable, "-I", SCRIPT, "check", *args], capture_output=True, text=True, env=self.env(**extra), cwd=cwd)
+
+    @unittest.skipUnless(os.path.isdir("/proc") and hasattr(os, "killpg") and hasattr(signal, "SIGHUP"), "needs /proc, process groups and SIGHUP")
+    def test_stopping_furbish_stops_the_checker_too(self):
+        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            pidfile = os.path.join(self.tmp, f"hang{int(sig)}.pid")
+            code = f"import os, time\nopen({pidfile!r}, 'w').write(str(os.getpid()))\ntime.sleep(120)\n"
+            cfg = self.config(self.entry(code, fail="x"))
+            p = subprocess.Popen([sys.executable, "-I", SCRIPT, "check", self.draft()], env=self.env(FURBISH_CONFIG=cfg), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            for _ in range(200):
+                if os.path.exists(pidfile) and os.path.getsize(pidfile):
+                    break
+                time.sleep(0.05)
+            p.send_signal(sig)
+            p.wait(10)
+            self.assertNotEqual(p.returncode, 0, sig)
+            self.assertTrue(self.gone(pidfile), sig)
 
     def test_checker_problems_join_the_built_in_ones_in_line_order(self):
         cfg = self.config(self.entry(LINES_SCRIPT, fail="FAIL"))
@@ -1992,6 +2020,15 @@ class TestFixText(unittest.TestCase):
     def test_raw_html_blocks_are_left_alone_because_github_shows_backticks_there_as_they_are(self):
         for d in ("<div>\nFixed in `abc1234` and \"test_one\" passed.\n</div>\n", '<p align="center">Fixed in `abc1234` today.</p>\n', "<pre>\nFixed in `abc1234` today.\n\nStill `abc1234` here.\n</pre>\n", "Text first.\n<DIV class=x>\nFixed in `abc1234` today.\n</DIV>\n", '<img src="a.png" width="10">\nFixed in `abc1234` today.\n'):
             self.assertEqual(fx(d, CN), d, d)
+
+    def test_a_comment_over_several_lines_does_not_end_a_raw_html_block(self):
+        d = "<div>\n<!--\nnote\n-->\nThe check passed in `abc1234`.\n</div>\n"
+        self.assertEqual(fx(d, CN), d)
+
+    def test_fix_refuses_when_its_details_blank_lines_would_change_how_the_draft_is_built(self):
+        for d in ("<details>\n<summary>x</summary>\n     <!--\nsome text here.\n</details>\n", "<details>\n<summary>Stack trace</summary>\n    at Foo.bar (foo.js:1)\n    at Baz.qux (baz.js:2)\n</details>\n"):
+            with self.assertRaises(furbish.Refused):
+                furbish.fix_text(d)
 
     def test_a_blank_line_ends_a_raw_html_block(self):
         self.assertEqual(fx("<div>\n\nFixed in `abc1234` today.\n\n</div>\n"), "<div>\n\nFixed in abc1234 today.\n\n</div>\n")
