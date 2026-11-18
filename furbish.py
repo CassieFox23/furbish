@@ -405,6 +405,9 @@ def _unlink(text):
     return "".join(pieces)
 
 
+_SUMMARY_TEXT = re.compile(r"<summary\b[^>]*>(.*?)(?:</summary>|$)", re.I)
+
+
 def _strip_tags(text):
     return _TAG.sub("", text) if "<" in text else text
 
@@ -614,7 +617,7 @@ def _validate_external(ext, repo):
 def _validate_profile(profile, repo):
     if not isinstance(profile, dict):
         raise ConfigError(f"profile for {repo} must be a table")
-    allowed = {"pr_template", "issue_template", "first_line_prefix", "first_line_skip", "footer", "tldr", "tldr_words", "tldr_max_sentences", "banned", "private", "keep_negation", "grade_skip", "words", "word_swaps", "code_names", "external"}
+    allowed = {"pr_template", "issue_template", "first_line_prefix", "first_line_skip", "footer", "tldr", "tldr_words", "tldr_max_sentences", "banned", "private", "keep_negation", "grade_skip", "grade_skip_folds", "words", "word_swaps", "code_names", "external"}
     for k in profile:
         if k not in allowed:
             raise ConfigError(f"unknown key {k} in profile for {repo}")
@@ -670,6 +673,8 @@ def _validate_profile(profile, repo):
             re.compile(pattern)
         except (re.error, OverflowError, RecursionError):
             raise ConfigError(f"grade_skip in {repo} is not a valid regex: {pattern}")
+    grade_skip_folds = profile.get("grade_skip_folds", [])
+    _validate_list_of_strings("grade_skip_folds", grade_skip_folds, repo)
     words = profile.get("words", [])
     _validate_list_of_strings("words", words, repo)
     known = _word_lists()
@@ -697,6 +702,7 @@ def _validate_profile(profile, repo):
         "private": list(private),
         "keep_negation": list(keep_negation),
         "grade_skip": list(grade_skip),
+        "grade_skip_folds": list(grade_skip_folds),
         "words": list(words),
         "word_swaps": word_swaps,
         "code_names": code_names,
@@ -1217,14 +1223,37 @@ def _grade_skip(p):
     return [re.compile(x) for x in p.get("grade_skip", [])]
 
 
-def _hard(lines, located, exempt, skip=()):
+def _skip_folds(lines, names):
+    if not names:
+        return frozenset()
+    out = set()
+    stack = []
+    for no, line in _outside_code(lines):
+        masked = _mask_code(line)
+        low = masked.lower()
+        if "<details" in low:
+            stack.append([no, None])
+        if stack and stack[-1][1] is None and "<summary" in low:
+            m = _SUMMARY_TEXT.search(masked)
+            stack[-1][1] = _strip_tags(line[m.start(1):m.end(1)]) if m else ""
+        if "</details>" in low and stack:
+            start, name = stack.pop()
+            if name and _listed(name, names):
+                out.update(range(start, no + 1))
+    for start, name in stack:
+        if name and _listed(name, names):
+            out.update(range(start, len(lines) + 1))
+    return out
+
+
+def _hard(lines, located, exempt, skip=(), folds=frozenset()):
     skipped = {}
     for x in located:
         s = x.sentence
         ignore = skipped.get(s.line)
         if ignore is None:
             src = lines[s.line - 1].removeprefix("\ufeff").strip()
-            ignore = skipped[s.line] = src in exempt or bool(_CHECKBOX_RE.match(src.lstrip("> \t"))) or any(r.search(src) for r in skip)
+            ignore = skipped[s.line] = s.line in folds or src in exempt or bool(_CHECKBOX_RE.match(src.lstrip("> \t"))) or any(r.search(src) for r in skip)
         if ignore or x.kind == "heading":
             continue
         cleaned = _cleaned(s.text)
@@ -1235,8 +1264,8 @@ def _hard(lines, located, exempt, skip=()):
             yield s, grade
 
 
-def _rule_grade(lines, located, exempt, skip):
-    return [Problem(s.line, s.id, "grade", f"the reading grade is {round(grade)}, which is too hard; every sentence should be under grade 10") for s, grade in _hard(lines, located, exempt, skip)]
+def _rule_grade(lines, located, exempt, skip, folds):
+    return [Problem(s.line, s.id, "grade", f"the reading grade is {round(grade)}, which is too hard; every sentence should be under grade 10") for s, grade in _hard(lines, located, exempt, skip, folds)]
 
 
 def check(text, profile=None, post=False, exempt=frozenset()):
@@ -1262,7 +1291,7 @@ def check(text, profile=None, post=False, exempt=frozenset()):
     problems += _rule_spdx(outside)
     problems += _rule_details(lines, footer)
     if post:
-        problems += _rule_grade(lines, located, exempt, _grade_skip(p))
+        problems += _rule_grade(lines, located, exempt, _grade_skip(p), _skip_folds(lines, p.get("grade_skip_folds")))
     problems.sort(key=lambda q: q.line)
     return problems
 
@@ -2035,7 +2064,7 @@ def split_suggestions(text, profile=None, exempt=frozenset()):
     p = profile or {}
     lines = text.replace("\r\n", "\n").split("\n")
     out = []
-    for s, grade in _hard(lines, _sentences(lines, p.get("footer")), exempt, _grade_skip(p)):
+    for s, grade in _hard(lines, _sentences(lines, p.get("footer")), exempt, _grade_skip(p), _skip_folds(lines, p.get("grade_skip_folds"))):
         if len(s.text) > _SPLIT_MAX:
             continue
         middle = len(s.text) / 2

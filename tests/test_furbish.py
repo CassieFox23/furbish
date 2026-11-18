@@ -316,7 +316,7 @@ class TestLoadConfig(ConfigCase):
             "banned": [], "private": [], "keep_negation": [],
             "code_names": {"quoted_tests": False, "checks": [], "states": []},
             "external": [],
-            "grade_skip": [], "words": [], "word_swaps": False, "kinds": {},
+            "grade_skip": [], "grade_skip_folds": [], "words": [], "word_swaps": False, "kinds": {},
         })
 
     def test_template_paths_expand_a_home_folder(self):
@@ -393,6 +393,12 @@ class TestLoadConfig(ConfigCase):
         self.bad('[repo."a/b"]\ngrade_skip = [""]\n', "grade_skip")
         self.bad('[repo."a/b"]\ngrade_skip = ["(unclosed"]\n', "grade_skip", "(unclosed")
         self.bad('[repo."a/b"]\ngrade_skip = ["a{99999999999999999999}"]\n', "grade_skip")
+
+    def test_grade_skip_folds_must_be_a_list_of_names(self):
+        self.assertEqual(self.load('[repo."a/b"]\ngrade_skip_folds = ["Test setup"]\n')["repo"]["a/b"]["grade_skip_folds"], ["Test setup"])
+        self.bad('[repo."a/b"]\ngrade_skip_folds = "Test setup"\n', "grade_skip_folds", "a/b")
+        self.bad('[repo."a/b"]\ngrade_skip_folds = [""]\n', "grade_skip_folds")
+        self.bad('[repo."a/b"]\ngrade_skip_folds = [3]\n', "grade_skip_folds")
 
     def test_loading_twice_gives_equal_results(self):
         path = self.write(EXAMPLE)
@@ -658,6 +664,63 @@ class TestGradeSkip(unittest.TestCase):
         self.assertEqual(len(sg(d)), 1)
         self.assertEqual(sg(d, p), [])
         self.assertEqual(probs(d, post=True), [(1, "grade")])
+        self.assertEqual(probs(d, p, post=True), [])
+
+
+def fold(summary, body, same_line=False):
+    head = f"<details><summary>{summary}</summary>" if same_line else f"<details>\n<summary>{summary}</summary>"
+    return f"{head}\n\n{body}\n\n</details>\n"
+
+
+class TestGradeSkipFolds(unittest.TestCase):
+    P = prof(grade_skip_folds=["Test setup", "Commands"])
+
+    def test_a_hard_sentence_in_a_named_fold_is_not_graded(self):
+        d = EASY + "\n\n" + fold("Test setup", HARD)
+        self.assertEqual(probs(d, post=True), [(6, "grade")])
+        self.assertEqual(probs(d, self.P, post=True), [])
+
+    def test_the_summary_may_share_the_details_line(self):
+        self.assertEqual(probs(fold("Commands", HARD, same_line=True), self.P, post=True), [])
+
+    def test_names_match_without_case_and_may_go_on_after_a_break(self):
+        self.assertEqual(probs(fold("test SETUP (made-up box)", HARD), self.P, post=True), [])
+        self.assertEqual(probs(fold("**Test setup**", HARD), self.P, post=True), [])
+        self.assertEqual(probs(fold("Test setups", HARD), self.P, post=True), [(4, "grade")])
+
+    def test_another_fold_is_still_graded(self):
+        self.assertEqual(probs(fold("Why it broke", HARD), self.P, post=True), [(4, "grade")])
+
+    def test_text_after_the_fold_is_graded_again(self):
+        d = fold("Test setup", HARD) + "\n" + HARD + "\n"
+        self.assertEqual(probs(d, self.P, post=True), [(8, "grade")])
+
+    def test_a_named_fold_inside_another_skips_only_itself(self):
+        d = "<details>\n<summary>Details</summary>\n\n" + fold("Test setup", HARD) + "\n" + HARD + "\n\n</details>\n"
+        self.assertEqual(probs(d, self.P, post=True), [(11, "grade")])
+
+    def test_a_named_fold_left_open_runs_to_the_end(self):
+        d = "<details>\n<summary>Test setup</summary>\n\n" + HARD + "\n\n" + HARD + "\n"
+        self.assertEqual(probs(d, self.P, post=True), [])
+
+    def test_a_fold_in_inline_code_is_not_a_fold(self):
+        d = "Write `<details><summary>Test setup</summary>` to fold it.\n\n" + HARD + "\n"
+        self.assertEqual(probs(d, self.P, post=True), [(3, "grade")])
+
+    def test_a_fold_in_a_code_block_is_not_a_fold(self):
+        d = "```\n<details>\n<summary>Test setup</summary>\n```\n\n" + HARD + "\n"
+        self.assertEqual(probs(d, self.P, post=True), [(6, "grade")])
+
+    def test_other_rules_still_read_a_skipped_fold(self):
+        p = prof(grade_skip_folds=["Test setup"], private=["secret-host"], banned=["synergy"])
+        self.assertEqual(probs(fold("Test setup", HARD + " Some synergy on secret-host."), p, post=True), [(4, "banned"), (4, "private")])
+
+    def test_split_and_check_skip_the_same_folds(self):
+        d = fold("Test setup", f"{SPLIT_A}, and {SPLIT_B}")
+        p = prof(grade_skip_folds=["Test setup"])
+        self.assertEqual(len(sg(d)), 1)
+        self.assertEqual(sg(d, p), [])
+        self.assertEqual(probs(d, post=True), [(4, "grade")])
         self.assertEqual(probs(d, p, post=True), [])
 
 
