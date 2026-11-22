@@ -158,6 +158,17 @@ Questions and bug reports go in [GitHub issues](https://github.com/CassieFox23/f
 - How issues and pull requests work: [CONTRIBUTING.md](CONTRIBUTING.md)
 - AI tools are fine if you say you used them: [AI_POLICY.md](AI_POLICY.md)
 
+## Credits
+
+The word lists in `data/` come from other projects, each kept beside its own licence:
+
+- [proselint](https://github.com/amperser/proselint) (BSD-3-Clause)
+- [write-good](https://github.com/btford/write-good), [too-wordy](https://github.com/duereg/too-wordy) and [weasel-words](https://github.com/btford/weasel-words) (MIT)
+- [GNU diction](https://www.gnu.org/software/diction/) (GPL-3.0-or-later)
+- [vale-ai-tells](https://github.com/tbhb/vale-ai-tells) (MIT)
+
+[data/NOTICE](data/NOTICE) says which files and commits each list came from.
+
 ## Licence
 
 GPL-3.0-only. Copyright Cassie_Fox. See [LICENSE](LICENSE).
