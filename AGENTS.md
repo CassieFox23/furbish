@@ -20,7 +20,7 @@ The whole program is one file, `furbish.py`. It uses the Python standard library
 4. **Standard library only.** Python 3.11 or newer, for tomllib. The only outside programs are the optional ones a user's config names (hunspell, vale, harper-cli).
 5. **Speed.** Word lists are set or dict lookups, never one giant alternation regex. A 262 KB draft, GitHub's comment ceiling, must check in under 1 second (`check` has its timing test; each new command gets one).
 6. **Synthetic fixtures only.** Test drafts are made up. Never a real person's post, and never a copy of one.
-7. **No personal details.** No personal paths, usernames, hostnames or email addresses anywhere in the tree or in the text of a commit message. The one exception is the commit author address, which carries the machine name; clear it from history before the repo ever goes public.
+7. **No personal details.** No personal paths, usernames, hostnames or email addresses anywhere in the tree, in a commit message or in a commit's author or committer address.
 8. **Style.** Match the file: no comments, no docstrings. The why of a change goes in the commit message.
 9. **Commits.** One per piece of work, staged by named path, message says what and why. Never push.
 10. **A human owner.** Every change belongs to a named person who answers for it ([AI_POLICY.md](AI_POLICY.md)). Leave the pull request template's "Human owner" part for them, and never tick it yourself.
