@@ -2,7 +2,7 @@ blank_issues_enabled: false
 contact_links:
   - name: What is planned
     url: https://github.com/CassieFox23/furbish/blob/main/ROADMAP.md
-    about: Now, next, later and not coming. Read before suggesting an idea.
+    about: What works, known gaps, ideas and what is not coming. Read before suggesting an idea.
   - name: A security problem
     url: https://github.com/CassieFox23/furbish/blob/main/SECURITY.md
     about: Report it privately by the route in SECURITY.md, not here.

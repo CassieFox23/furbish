@@ -6,7 +6,7 @@ furbish has no network, no telemetry and no logs. It reads what you give it and 
 
 - the draft you name on the command line
 - your config: `$FURBISH_CONFIG`, else `$XDG_CONFIG_HOME/furbish/config.toml`, else `~/.config/furbish/config.toml`
-- its own `data/` folder (planned word lists)
+- its own `data/` folder, which holds the word lists
 - an outside checker, only if your config names it. It is a program on your machine and does whatever that program does.
 
 ## What it writes
