@@ -2,7 +2,7 @@
 
 ## Reporting a problem
 
-While this repository is private, report a problem by GitHub DM to CassieFox23. Please don't open a public issue for a security problem.
+Use the private report form: this repository's **Security** tab, then **Report a vulnerability**. Only the maintainer can read it. Please don't open a public issue for a security problem.
 
 What counts:
 
