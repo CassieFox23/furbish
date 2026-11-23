@@ -6,6 +6,8 @@ furbish looks for the file in this order: `$FURBISH_CONFIG`, then `$XDG_CONFIG_H
 
 Each target repo has its own profile, `[repo."owner/name"]`. Pick one with `--repo owner/name`, or set `default_repo` to use it every time. The example uses made-up names:
 
+A `[generic]` table is the profile for every repo that has none of its own. It takes the same keys as a repo profile, `kinds` included. With it, `--repo owner/name` for a repo the file has no profile for uses `[generic]` and says so in one line on stderr, instead of stopping with an error; with no `--repo` and no `default_repo`, `[generic]` is used too. A repo's own profile always wins, and `default_repo` still wins when `--repo` is left out. Without a `[generic]` table, a repo with no profile is an error, as before.
+
 ```toml
 default_repo = "example-org/example"
 

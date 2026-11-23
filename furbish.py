@@ -728,7 +728,7 @@ def _validate_kinds(kinds, base, repo):
 
 def _normalise(data):
     for k in data:
-        if k not in ("default_repo", "repo"):
+        if k not in ("default_repo", "repo", "generic"):
             raise ConfigError(f"unknown setting {k}")
     default_repo = data.get("default_repo")
     if default_repo is not None:
@@ -741,15 +741,25 @@ def _normalise(data):
     profiles = {}
     for name, profile in table.items():
         _validate_repo_name(name)
-        kinds = {}
-        if isinstance(profile, dict):
-            profile = dict(profile)
-            kinds = profile.pop("kinds", {})
-        profiles[name] = _validate_profile(profile, name)
-        profiles[name]["kinds"] = _validate_kinds(kinds, profile, name)
+        profiles[name] = _profile_with_kinds(profile, name)
     if default_repo is not None and default_repo not in profiles:
         raise ConfigError(f"default_repo {default_repo} has no profile")
-    return {"default_repo": default_repo, "repo": profiles}
+    generic = data.get("generic")
+    if generic is not None:
+        if not isinstance(generic, dict):
+            raise ConfigError("generic must be a table")
+        generic = _profile_with_kinds(generic, "generic")
+    return {"default_repo": default_repo, "repo": profiles, "generic": generic}
+
+
+def _profile_with_kinds(profile, name):
+    kinds = {}
+    if isinstance(profile, dict):
+        profile = dict(profile)
+        kinds = profile.pop("kinds", {})
+    out = _validate_profile(profile, name)
+    out["kinds"] = _validate_kinds(kinds, profile, name)
+    return out
 
 
 def load_config(path):
@@ -772,20 +782,40 @@ def pick_profile(config, repo, kind=None):
         return None
     if repo is None:
         repo = config.get("default_repo")
-        if repo is None:
+        if repo is None and config.get("generic") is None:
             if kind is not None:
                 raise ConfigError("a kind needs a repo profile: pass --repo or set default_repo")
             return None
-    if repo not in config["repo"]:
+    if repo is not None and repo in config["repo"]:
+        profile = config["repo"][repo]
+    elif config.get("generic") is not None:
+        profile = config["generic"]
+    else:
         known = ", ".join(sorted(config["repo"]))
         raise ConfigError(f"the config file has no profile for {repo}; it has: {known}")
-    profile = config["repo"][repo]
     if kind is None:
         return profile
     if kind not in profile["kinds"]:
         names = ", ".join(sorted(profile["kinds"])) or "none"
-        raise ConfigError(f"the profile for {repo} has no kind {kind}; it has: {names}")
+        owner = "the generic profile" if profile is config["generic"] else f"the profile for {repo}"
+        raise ConfigError(f"{owner} has no kind {kind}; it has: {names}")
     return profile["kinds"][kind]
+
+
+def generic_note(config, repo):
+    if config is None or repo is None or repo in config["repo"] or config.get("generic") is None:
+        return None
+    return f"the config file has no profile for {repo}, so its generic profile is used"
+
+
+def _load_profile(args):
+    path = find_config(os.environ)
+    config = load_config(path) if path else None
+    profile = pick_profile(config, args.repo, args.kind)
+    note = generic_note(config, args.repo)
+    if note:
+        print(f"furbish: {_plain(note)}", file=sys.stderr)
+    return profile
 
 
 Problem = namedtuple("Problem", "line sid rule message")
@@ -2121,9 +2151,7 @@ def _plain(text):
 
 def _run_check(args):
     try:
-        path = find_config(os.environ)
-        config = load_config(path) if path else None
-        profile = pick_profile(config, args.repo, args.kind)
+        profile = _load_profile(args)
         exempt = _template_lines(profile)
         text = _read_text(args.draft)
         problems = check(text, profile, args.post, exempt)
@@ -2176,9 +2204,7 @@ def _write_text(path, text):
 def _run_set(args):
     shown = _plain(args.draft)
     try:
-        path = find_config(os.environ)
-        config = load_config(path) if path else None
-        profile = pick_profile(config, args.repo, args.kind)
+        profile = _load_profile(args)
         text = _read_text(args.draft, True)
         edit = set_sentence(text, args.sid, args.text, profile)
         if edit.text != text and args.write:
@@ -2211,9 +2237,7 @@ def _run_set(args):
 def _run_fix(args):
     shown = _plain(args.draft)
     try:
-        path = find_config(os.environ)
-        config = load_config(path) if path else None
-        profile = pick_profile(config, args.repo, args.kind)
+        profile = _load_profile(args)
         exempt = _template_lines(profile)
         text = _read_text(args.draft, True)
         edits = harper_edits(profile["external"], os.path.abspath(args.draft)) if profile else []
@@ -2239,9 +2263,7 @@ def _run_fix(args):
 
 def _run_split(args):
     try:
-        path = find_config(os.environ)
-        config = load_config(path) if path else None
-        profile = pick_profile(config, args.repo, args.kind)
+        profile = _load_profile(args)
         exempt = _template_lines(profile)
         found = split_suggestions(_read_text(args.draft), profile, exempt)
     except ConfigError as e:
@@ -2262,7 +2284,7 @@ def main():
     sub = ap.add_subparsers(dest="command", metavar="command")
     ck = sub.add_parser("check", help="print only the problems in a draft, with line and sentence id", description="Prints only the problems in a draft, one per line as path:line: message, and nothing at all when the draft passes. Exits 0 when it passes, 1 when it finds problems and 2 when it cannot run.")
     ck.add_argument("draft", help="the draft file to check")
-    ck.add_argument("--repo", metavar="OWNER/NAME", help="the repo profile from the config file to use; without it, default_repo is used")
+    ck.add_argument("--repo", metavar="OWNER/NAME", help="the repo profile from the config file to use; without it, default_repo is used. A repo with no profile gets the [generic] one when the file has it")
     ck.add_argument("--kind", metavar="NAME", help="a kind inside the repo profile, such as tracker; it overrides only the keys it names")
     ck.add_argument("--post", action="store_true", help="also grade the reading level, as you would just before a post goes up")
     ck.add_argument("--text", action="store_true", help="print each flagged sentence, indented, under its problem")
@@ -2270,17 +2292,17 @@ def main():
     st.add_argument("draft", help="the draft file to change")
     st.add_argument("sid", metavar="ID", help="the sentence id, for example S12")
     st.add_argument("text", help="the new sentence, as one line; if it starts with a dash, put -- before it, and put any option such as --write before the --")
-    st.add_argument("--repo", metavar="OWNER/NAME", help="the repo profile from the config file to use; without it, default_repo is used")
+    st.add_argument("--repo", metavar="OWNER/NAME", help="the repo profile from the config file to use; without it, default_repo is used. A repo with no profile gets the [generic] one when the file has it")
     st.add_argument("--kind", metavar="NAME", help="a kind inside the repo profile, such as tracker; it overrides only the keys it names")
     st.add_argument("--write", action="store_true", help="change the file; without it nothing is written")
     fi = sub.add_parser("fix", help="make the safe mechanical edits to a draft", description="Makes the safe mechanical edits to the prose of a draft: takes the backticks off a lone commit sha or URL, puts a blank line inside <details> where GitHub needs one, and, if the repo profile has code_names, turns quoted test names, CI check names and CI states into inline code, and with word_swaps makes the one-for-one swaps from its word lists, and the Harper fixes an external entry's fix list allows. It never touches code blocks, comments, tables, quotes, link text, headings, checkboxes, template lines or the footer. Prints the changes as a diff, and writes the file only with --write. Exits 0 when it is done (and prints nothing when there is nothing to fix), 1 when it refuses to change a draft and 2 when it cannot run.")
     fi.add_argument("draft", help="the draft file to change")
-    fi.add_argument("--repo", metavar="OWNER/NAME", help="the repo profile from the config file to use; without it, default_repo is used")
+    fi.add_argument("--repo", metavar="OWNER/NAME", help="the repo profile from the config file to use; without it, default_repo is used. A repo with no profile gets the [generic] one when the file has it")
     fi.add_argument("--kind", metavar="NAME", help="a kind inside the repo profile, such as tracker; it overrides only the keys it names")
     fi.add_argument("--write", action="store_true", help="change the file; without it nothing is written")
     sp = sub.add_parser("split", help="suggest where a hard sentence could be cut in two", description="Looks at every sentence that reads at grade 10 or harder (the sentences check --post flags) and, where cutting it at a semicolon, a spaced dash or a comma before and, but, so, or or yet gives two sentences that both read easier, prints the sentence id and the two sentences. It only suggests: it never changes the draft, so apply a suggestion with furbish set. It looks only in plain prose, never inside code, links, URLs or quotes, and skips a sentence over 2,000 characters. Prints nothing when it has no suggestion. Exits 0, or 2 when it cannot run.")
     sp.add_argument("draft", help="the draft file to look at")
-    sp.add_argument("--repo", metavar="OWNER/NAME", help="the repo profile from the config file to use; without it, default_repo is used")
+    sp.add_argument("--repo", metavar="OWNER/NAME", help="the repo profile from the config file to use; without it, default_repo is used. A repo with no profile gets the [generic] one when the file has it")
     sp.add_argument("--kind", metavar="NAME", help="a kind inside the repo profile, such as tracker; it overrides only the keys it names")
     if not argv:
         ap.print_help(sys.stderr)

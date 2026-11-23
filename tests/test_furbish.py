@@ -288,7 +288,7 @@ class TestFindConfig(ConfigCase):
 
 class TestLoadConfig(ConfigCase):
     def test_empty_file(self):
-        self.assertEqual(self.load(""), {"default_repo": None, "repo": {}})
+        self.assertEqual(self.load(""), {"default_repo": None, "repo": {}, "generic": None})
 
     def test_the_example_in_config_md(self):
         c = self.load(EXAMPLE)
@@ -430,6 +430,63 @@ class TestPickProfile(ConfigCase):
         with self.assertRaises(furbish.ConfigError) as cm:
             furbish.pick_profile(None, "x/y")
         self.assertIn("x/y", str(cm.exception))
+
+
+class TestGenericProfile(ConfigCase):
+    BOTH = '[generic]\nbanned = ["plain"]\n[generic.kinds.release]\ntldr = "off"\n[repo."a/b"]\nbanned = ["one"]\n[repo."a/b".code_names]\nchecks = ["Example lint"]\n'
+
+    def test_a_repo_with_no_profile_gets_the_generic_one(self):
+        p = furbish.pick_profile(self.load(self.BOTH), "x/y")
+        self.assertEqual(p["banned"], ["plain"])
+        self.assertEqual(p["code_names"]["checks"], [])
+
+    def test_a_repo_with_its_own_profile_still_gets_it(self):
+        self.assertEqual(furbish.pick_profile(self.load(self.BOTH), "a/b")["banned"], ["one"])
+
+    def test_default_repo_still_wins_when_no_repo_is_given(self):
+        c = self.load('default_repo = "a/b"\n' + self.BOTH)
+        self.assertEqual(furbish.pick_profile(c, None)["banned"], ["one"])
+
+    def test_no_repo_and_no_default_gets_the_generic_one(self):
+        self.assertEqual(furbish.pick_profile(self.load(self.BOTH), None)["banned"], ["plain"])
+
+    def test_the_generic_profile_has_its_own_kinds(self):
+        c = self.load(self.BOTH)
+        k = furbish.pick_profile(c, "x/y", "release")
+        self.assertEqual((k["tldr"], k["banned"]), ("off", ["plain"]))
+        with self.assertRaises(furbish.ConfigError) as cm:
+            furbish.pick_profile(c, "x/y", "tracker")
+        self.assertEqual(str(cm.exception), "the generic profile has no kind tracker; it has: release")
+
+    def test_without_a_generic_profile_an_unknown_repo_is_still_an_error(self):
+        with self.assertRaises(furbish.ConfigError):
+            furbish.pick_profile(self.load('[repo."a/b"]\n'), "x/y")
+
+    def test_the_generic_profile_is_checked_like_a_repo_profile(self):
+        self.bad('generic = "x"\n', "generic")
+        self.bad('[generic]\nflavour = "x"\n', "generic", "flavour")
+        self.bad('[generic.kinds."no way"]\n', "generic")
+
+    def test_the_note_names_the_repo_only_when_the_generic_profile_stands_in(self):
+        c = self.load(self.BOTH)
+        self.assertIn("x/y", furbish.generic_note(c, "x/y"))
+        self.assertIsNone(furbish.generic_note(c, "a/b"))
+        self.assertIsNone(furbish.generic_note(c, None))
+        self.assertIsNone(furbish.generic_note(self.load('[repo."a/b"]\n'), "x/y"))
+        self.assertIsNone(furbish.generic_note(None, "x/y"))
+
+    def test_check_on_a_repo_with_no_profile_uses_the_generic_rules_and_says_so(self):
+        cfg = self.write('default_repo = "a/b"\n' + self.BOTH)
+        draft = self.write("Say it plain. Say one thing.\n", "draft.md")
+        env = {"FURBISH_CONFIG": cfg, "HOME": self.tmp, "PATH": "/usr/bin:/bin"}
+        r = subprocess.run([sys.executable, "-I", SCRIPT, "check", "--repo", "x/y", draft], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("plain", r.stdout)
+        self.assertNotIn("one", r.stdout)
+        self.assertEqual(r.stderr, "furbish: the config file has no profile for x/y, so its generic profile is used\n")
+        r = subprocess.run([sys.executable, "-I", SCRIPT, "check", "--repo", "a/b", draft], capture_output=True, text=True, env=env)
+        self.assertEqual((r.returncode, r.stderr), (1, ""))
+        self.assertIn("one", r.stdout)
 
 
 class TestKinds(ConfigCase):
