@@ -33,6 +33,11 @@ The detail of each piece is in [CHANGELOG.md](CHANGELOG.md).
 - [x] Harper's grammar checks, with only the fixes a profile allows.
 - [x] Tests on made-up drafts, with a timing test for each command. Every command was read blind by another model, and the whole project once by a stronger one.
 
+## Next
+
+- [ ] A fresh blind review on Fable 5.2 before the first release (the 10 Nov 2026 review ran on Fable 5.1). Its findings get fixed, or land under Known gaps.
+- [ ] The first release, v0.1.0: the version and its test, a dated CHANGELOG section and release notes, then the tag and a GitHub release.
+
 ## Known gaps
 
 Things furbish gets wrong or doesn't check yet. None of them crashes or loses text.
